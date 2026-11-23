@@ -256,10 +256,8 @@ function renderAnalytics({hourly, models}) {
     const max = Math.max(1, ...hourly.map(item => item.success + item.failed));
     const chart = svgNode('svg', {viewBox: '0 0 384 134', role: 'group', 'aria-label': '每小时请求数'});
     chart.append(svgNode('line', {x1: 0, x2: width, y1: height, y2: height, stroke: 'var(--border)'}));
-    hourly.forEach(({hour, success, failed, cache_hits}, i) => {
-      const label = typeof hour === 'number'
-        ? new Date(hour * 1000).toISOString().slice(11, 13) + ':00'
-        : hour.match(/(?:^|[T ])(\d{2})(?=:|$)/)[1] + ':00';
+    hourly.forEach(({hour_ts, success, failed, cache_hits}, i) => {
+      const label = String(new Date(hour_ts * 1000).getHours()).padStart(2, '0') + ':00';
       const tooltip = label + ' · 成功 ' + success + ' · 失败 ' + failed + ' · 命中缓存 ' + cache_hits;
       const group = svgNode('g', {role: 'img', 'aria-label': tooltip, tabindex: 0});
       const good = height * success / max, bad = height * failed / max;
