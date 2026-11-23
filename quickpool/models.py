@@ -64,6 +64,7 @@ class ApiKeyCreate(BaseModel):
     group_name: str = Field(default="", max_length=40)
     daily_limit: int = Field(default=0, ge=0, le=1000000)
     expires_at: float | None = None
+    user_id: str = Field(default="", max_length=64)
 
 
 class ApiKeyPatch(BaseModel):
@@ -74,6 +75,33 @@ class ApiKeyPatch(BaseModel):
     enabled: bool | None = None
     daily_limit: int | None = Field(default=None, ge=0, le=1000000)
     expires_at: float | None = None
+    user_id: str | None = Field(default=None, max_length=64)
+
+
+class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    notes: str = Field(default="", max_length=300)
+    enabled: bool = True
+    group_name: str = Field(default="", max_length=40)
+    allowed_models: list[str] = Field(default_factory=list, max_length=32)
+    max_thinking_effort: Literal["", "off", "low", "medium", "high"] = ""
+    smart_default_effort: Literal["", "off", "low", "medium", "high"] = ""
+    daily_request_limit: int = Field(default=0, ge=0, le=1000000)
+    daily_token_limit: int = Field(default=0, ge=0, le=1000000000)
+
+
+class UserPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    notes: str | None = Field(default=None, max_length=300)
+    enabled: bool | None = None
+    group_name: str | None = Field(default=None, max_length=40)
+    allowed_models: list[str] | None = Field(default=None, max_length=32)
+    max_thinking_effort: Literal["", "off", "low", "medium", "high"] | None = None
+    smart_default_effort: Literal["", "off", "low", "medium", "high"] | None = None
+    daily_request_limit: int | None = Field(default=None, ge=0, le=1000000)
+    daily_token_limit: int | None = Field(default=None, ge=0, le=1000000000)
 
 
 class SettingsPatch(BaseModel):
