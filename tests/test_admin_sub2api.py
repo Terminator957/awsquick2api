@@ -287,3 +287,51 @@ async def test_batch_test_limits_streams_and_releases_accounts(gateway, monkeypa
     assert (logs[ids[0]]['status'], logs[ids[0]]['output_chars']) == (200, 2)
     assert (logs[failing]['status'], logs[failing]['error']) == (429, 'rate limited')
     assert all(row['id'].startswith('test-') for row in logs.values())
+
+
+def test_real_app_sub2api_e2e(tmp_path):
+    from fastapi.testclient import TestClient
+    from quickpool.main import create_app
+
+    app = create_app(data_dir=tmp_path)
+    with TestClient(app) as client:
+        admin = {'Authorization': f'Bearer {app.state.store.admin_key}'}
+        # Create managed API key
+        created = client.post('/api/keys', headers=admin, json={
+            'name': 'claude-cli', 'notes': 'dev laptop', 'group_name': 'prod', 'daily_limit': 2,
+        })
+        assert created.status_code == 201
+        key_data = created.json()
+        plaintext = key_data['plaintext_key']
+        key_id = key_data['id']
+        assert plaintext.startswith('sk-qp-') and 'key_hash' not in key_data
+
+        # Managed key works on /v1/models
+        r1 = client.get('/v1/models', headers={'Authorization': f'Bearer {plaintext}'})
+        assert r1.status_code == 200
+
+        # Disable managed key -> 401
+        p1 = client.patch(f'/api/keys/{key_id}', headers=admin, json={'enabled': False})
+        assert p1.status_code == 200 and p1.json()['enabled'] is False
+        r2 = client.get('/v1/models', headers={'Authorization': f'Bearer {plaintext}'})
+        assert r2.status_code == 401
+
+        # Re-enable + settings + analytics + sessions + logs export
+        assert client.patch(f'/api/keys/{key_id}', headers=admin, json={'enabled': True}).status_code == 200
+        s = client.patch('/api/settings', headers=admin, json={
+            'scheduling_strategy': 'quota_first', 'session_cache_ttl': 900, 'max_attempts': 2,
+        })
+        assert s.status_code == 200 and s.json()['scheduling_strategy'] == 'quota_first'
+        assert app.state.upstream.session_cache.ttl == 900
+
+        an = client.get('/api/analytics?hours=24', headers=admin)
+        assert an.status_code == 200 and len(an.json()['hourly']) == 24
+
+        sess = client.get('/api/sessions', headers=admin)
+        assert sess.status_code == 200 and 'sessions' in sess.json()
+
+        exp = client.get('/api/logs/export', headers=admin)
+        assert exp.status_code == 200 and 'text/csv' in exp.headers['content-type']
+
+        assert client.delete(f'/api/keys/{key_id}', headers=admin).status_code == 204
+        assert client.delete(f'/api/keys/{key_id}', headers=admin).status_code == 404

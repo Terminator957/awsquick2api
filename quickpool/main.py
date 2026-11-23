@@ -7,6 +7,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -16,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
+from .admin_api import handle_batch_action, register_admin_routes
+from .api_keys import KeyAuthError, verify_managed_key
 from .cli_api import register_cli_routes
 from .compat import CompatibilityError, Prepared
 from .models import (
@@ -52,6 +55,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         app.state.quotas = Quotas(auth, transport)
         app.state.pool = Pool(store, app.state.quotas)
         app.state.upstream = Upstream(store, auth, connect=ws_connect, transport=transport)
+        app.state.upstream.session_cache.set_ttl(store.get_settings().get("session_cache_ttl", 1800))
         auth.start()
         quota_task = None
         if transport is None and ws_connect is None:
@@ -119,13 +123,24 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         if not hmac.compare_digest(token.encode(), request.app.state.store.admin_key.encode()):
             raise HTTPException(401, "管理密钥无效")
 
+    current_key_ctx: ContextVar[tuple[str, str]] = ContextVar("quickpool_api_key", default=("", ""))
+
     def api_access(request: Request):
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
         if request.url.path in ('/messages', '/v1/messages', '/messages/count_tokens', '/v1/messages/count_tokens'):
             token = token or request.headers.get('x-api-key', '')
         store = request.app.state.store
-        if not hmac.compare_digest(token.encode(), store.api_key.encode()):
+        if hmac.compare_digest(token.encode(), store.api_key.encode()):
+            current_key_ctx.set(("", ""))
+            return
+        try:
+            managed = verify_managed_key(store, token)
+        except KeyAuthError as exc:
+            raise HTTPException(exc.status, exc.message) from None
+        if managed is None:
             raise HTTPException(401, "API 密钥无效")
+        store.record_api_key_use(managed["id"])
+        current_key_ctx.set((managed["id"], managed.get("group_name") or ""))
 
     def get_account(account_id):
         account = app.state.store.account(account_id)
@@ -167,39 +182,16 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
 
     @app.post("/api/accounts/batch", dependencies=[Depends(admin)])
     async def batch_accounts(body: BatchAccountAction):
-        seen = []
-        for aid in body.account_ids:
-            if aid not in seen and app.state.store.account(aid):
-                seen.append(aid)
-        if body.action in ("enable", "disable"):
-            enabled = body.action == "enable"
-            for aid in seen:
-                app.state.store.patch_account(aid, {"enabled": enabled})
-                if not enabled and getattr(app.state.upstream, 'session_cache', None):
-                    app.state.upstream.session_cache.invalidate_account(aid)
-            return {"action": body.action, "affected": len(seen)}
-        if body.action == "clear_cooldown":
-            affected = 0
-            for aid in seen:
-                acc = app.state.store.account(aid)
-                if acc and (acc["state"] == "cooldown" or acc["cooldown_until"] > 0 or acc["last_error"]):
-                    patch = {"cooldown_until": 0, "last_error": ""}
-                    if acc["state"] == "cooldown":
-                        patch["state"] = "ready"
-                    app.state.store.patch_account(aid, patch)
-                    affected += 1
-            return {"action": body.action, "affected": affected}
-        sem = asyncio.Semaphore(3)
-        async def _refresh_one(aid):
-            async with sem:
-                return aid, await app.state.quotas.refresh(aid)
-        results = dict(await asyncio.gather(*(_refresh_one(aid) for aid in seen)))
-        return {"action": body.action, "affected": len(results), "results": results}
+        res = await handle_batch_action(app, body.action, body.account_ids, body.value)
+        affected = sum(1 for item in res["results"] if item.get("ok"))
+        return {"action": body.action, "affected": affected, **res}
 
     @app.get("/api/config", dependencies=[Depends(admin)])
     async def config():
+        settings = app.state.store.get_settings()
         return {"api_key_masked": 'sk-quick-••••••••', "model": DEFAULT_MODEL, "models": list(MODEL_IDS), "version": __version__,
-                "strategy": "weighted-least-connections", "max_attempts": 3}
+                "strategy": settings.get("scheduling_strategy", "weighted"),
+                "max_attempts": settings.get("max_attempts", 3)}
 
     @app.post('/api/config/reveal-key', dependencies=[Depends(admin)])
     async def reveal_key():
@@ -313,9 +305,15 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             app.state.store.log(request_id, account_id, status, round((time.monotonic() - start) * 1000), chars, message)
 
     @app.get("/api/logs", dependencies=[Depends(admin)])
-    async def logs(account_id: str | None = None, status: str | None = None, limit: int = 100):
-        bounded = max(1, min(limit, 500))
-        return {"requests": app.state.store.logs(limit=bounded, account_id=account_id or None, status=status or None)}
+    async def logs(account_id: str | None = None, status: str | None = None, model: str | None = None,
+                   api_key_id: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0):
+        bounded = max(1, min(limit, 200))
+        safe_offset = max(0, offset)
+        return app.state.store.logs_page(
+            limit=bounded, offset=safe_offset,
+            account_id=account_id or None, status=status or None,
+            model=model or None, api_key_id=api_key_id or None, q=q or None,
+        )
 
     @app.get("/v1/models", dependencies=[Depends(api_access)])
     async def models():
@@ -340,20 +338,22 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         account = None
         iterator = None
         first = ""
+        api_key_id, key_group = current_key_ctx.get()
         cache = getattr(app.state.upstream, 'session_cache', None)
         matched_entry, delta_offset = None, 0
         if cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
-            eligible_ids = app.state.pool.eligible_ids(tried)
+            eligible_ids = app.state.pool.eligible_ids(tried, group_name=key_group)
             match = cache.match(prepared.context, value.mode, value.effort, available_account_ids=eligible_ids)
             if match is not None:
                 matched_entry, delta_offset = match
             else:
                 cache.record_miss()
         stream_state: dict = {}
-        for attempt_idx in range(3):
+        max_attempts = max(1, min(5, int(app.state.store.get_settings().get("max_attempts", 3))))
+        for attempt_idx in range(max_attempts):
             preferred = matched_entry.account_id if (attempt_idx == 0 and matched_entry is not None) else None
             try:
-                account = await app.state.pool.acquire(tried, preferred_account_id=preferred)
+                account = await app.state.pool.acquire(tried, preferred_account_id=preferred, group_name=key_group)
             except PoolUnavailable:
                 break
             tried.add(account["id"])
@@ -377,7 +377,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                                              penalize=exc.retryable)
                 app.state.store.log(uuid.uuid4().hex, account["id"], exc.status,
                                     round((time.monotonic() - started) * 1000), 0, str(exc),
-                                    model=value.model, session_hit=bool(stream_state.get('reused')))
+                                    model=value.model, session_hit=bool(stream_state.get('reused')),
+                                    api_key_id=api_key_id)
                 if not exc.retryable:
                     break
             except BaseException:
@@ -430,7 +431,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                     cache.invalidate(session_thread_id)
                 app.state.store.log(request_id, account["id"], status,
                                     round((time.monotonic() - started) * 1000), chars, error,
-                                    model=value.model, session_hit=session_reused)
+                                    model=value.model, session_hit=session_reused,
+                                    api_key_id=api_key_id)
 
         def chunk(delta, finish=None):
             return {"id": request_id, "object": "chat.completion.chunk", "created": created,
@@ -489,6 +491,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                              "finish_reason": "stop"}]}
 
+    register_admin_routes(app, admin)
     register_cli_routes(app, completions, api_access)
 
     static = Path(__file__).parent / "static"

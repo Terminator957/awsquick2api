@@ -260,7 +260,9 @@ class Store:
                 _API_KEY_SELECT + " WHERE key_hash=?", (int(time.time() // 86400 * 86400), h)).fetchone()
         return dict(row) | {"enabled": bool(row["enabled"])} if row is not None else None
 
-    def create_api_key(self, data: ApiKeyCreate):
+    def create_api_key(self, data: ApiKeyCreate | None = None, **kwargs):
+        if data is None:
+            data = ApiKeyCreate(**kwargs)
         key_id = str(uuid.uuid4())
         plaintext, key_hash, key_prefix = generate_api_key()
         with self.lock, self.db:
@@ -285,9 +287,12 @@ class Store:
             )
         return self.get_api_key(key_id)
 
+    update_api_key = patch_api_key
+
     def delete_api_key(self, key_id):
         with self.lock, self.db:
-            self.db.execute("DELETE FROM api_keys WHERE id=?", (key_id,))
+            cur = self.db.execute("DELETE FROM api_keys WHERE id=?", (key_id,))
+            return cur.rowcount > 0
 
     def record_api_key_use(self, key_id):
         with self.lock, self.db:
@@ -307,6 +312,8 @@ class Store:
                  if key in _SETTINGS_DEFAULTS and value is not None),
             )
         return self.get_settings()
+
+    update_settings = patch_settings
 
     def log(self, request_id, account_id, status, duration_ms, output_chars, error="", *,
             model=DEFAULT_MODEL, session_hit: bool = False, api_key_id: str = ""):
