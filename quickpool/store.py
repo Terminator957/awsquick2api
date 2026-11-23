@@ -259,6 +259,15 @@ class Store:
                  int(turns), now, now + max(0.0, float(ttl))),
             )
 
+    def touch_session(self, thread_id: str, expires_at: float):
+        """命中后续期，只更新过期时间，避免重写整条消息哈希。"""
+        now = time.time()
+        with self.lock, self.db:
+            self.db.execute(
+                "UPDATE session_cache SET expires_at=?, updated_at=? WHERE thread_id=?",
+                (now + max(0.0, float(expires_at) - now), now, thread_id),
+            )
+
     def delete_session(self, thread_id: str):
         with self.lock, self.db:
             self.db.execute("DELETE FROM session_cache WHERE thread_id=?", (thread_id,))

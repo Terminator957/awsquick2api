@@ -372,8 +372,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             match = cache.match(prepared.context, value.mode, effective_effort, available_account_ids=eligible_ids)
             if match is not None:
                 matched_entry, delta_offset = match
-            else:
-                cache.record_miss()
+                delta_messages = (prepared.context.get('messages') or [])[delta_offset:]
+                cache.record_saved(max(0, input_tokens - estimate_tokens(delta_messages)))
         stream_state: dict = {}
         max_attempts = max(1, min(5, int(settings.get("max_attempts", 3))))
         for attempt_idx in range(max_attempts):

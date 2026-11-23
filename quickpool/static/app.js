@@ -214,7 +214,7 @@ async function refresh() {
     text('#stat-latency', result.stats.success ? (result.stats.avg_ms/1000).toFixed(2) : '—');
     const cache = result.cache_stats;
     text('#stat-cache-rate', (100 * (cache?.hit_rate ?? 0)).toFixed(1).replace(/\.0$/, ''));
-    text('#stat-cache-note', '命中 ' + (cache?.hits ?? 0) + ' 次 · 活跃会话 ' + (cache?.active_sessions ?? 0) + ' 个');
+    text('#stat-cache-note', '命中 ' + (cache?.hits ?? 0) + ' 次 · 省 ' + (cache?.saved_tokens ?? 0).toLocaleString() + ' token · 活跃 ' + (cache?.active_sessions ?? 0) + ' 个');
     const pool = result.pool_quota;
     text('#stat-pool-units', pool ? `${pool.total_available_units ?? '—'} / ${pool.total_provisioned_units ?? '—'}` : '—');
     text('#stat-pool-units-note', '分钟/点 · ' + (pool?.accounts_with_quota ?? 0) + ' 个账号有额度数据');

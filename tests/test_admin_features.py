@@ -140,6 +140,7 @@ def test_end_to_end_session_reuse_affinity_and_cache_stats(gateway):
     # Verify cache_stats and log session_hit
     ov = client.get('/api/overview', headers=admin).json()
     assert ov['cache_stats']['hits'] >= 1
+    assert ov['cache_stats']['saved_tokens'] > 0
     logs = client.get('/api/logs', headers=admin).json()['requests']
     assert logs[0]['session_hit'] is True
     assert logs[1]['session_hit'] is False

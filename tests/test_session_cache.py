@@ -79,9 +79,9 @@ def test_expiration_filters_matches_and_stats(clock):
     cache = SessionCache(ttl=5.0)
     cache.save('a', 'thread', FIRST, 'smart', 'off')
     new = context(('user', 'first question'), ('user', 'next question'))
-    clock.now += 5
+    clock.now += 4
     assert cache.match(new, 'smart', 'off') is not None
-    clock.now += 0.1
+    clock.now += 5.01
     assert cache.match(new, 'smart', 'off') is None
     assert cache.stats()['active_sessions'] == 0
 
@@ -98,7 +98,7 @@ def test_lru_evicts_oldest_last_used_and_save_updates_thread(clock):
     cache.save('b', 'third', FIRST, 'smart', 'off')
     new = context(('user', 'first question'), ('user', 'updated prefix'), ('user', 'next'))
     entry, offset = cache.match(new, 'smart', 'off', {'a'})
-    assert (entry.thread_id, entry.turns, entry.last_used, offset) == ('first', 2, clock.now - 1, 2)
+    assert (entry.thread_id, entry.turns, entry.last_used, offset) == ('first', 2, clock.now, 2)
     assert cache.match(updated, 'smart', 'off', {'a'}) is None
     assert cache.stats()['active_sessions'] == 2
 
@@ -136,15 +136,54 @@ def test_invalidate_thread_and_account():
     assert cache.stats()['active_sessions'] == 1
 
 
-def test_stats_count_only_hits_and_explicit_misses():
+def test_stats_count_hits_and_lookups():
     cache = SessionCache()
-    assert cache.stats() == {'hits': 0, 'misses': 0, 'hit_rate': 0.0, 'active_sessions': 0}
+    assert cache.stats() == {'hits': 0, 'misses': 0, 'hit_rate': 0.0, 'active_sessions': 0,
+                             'saved_tokens': 0, 'evictions': 0}
     assert cache.match(FIRST, 'smart', 'off') is None
     cache.save('a', 'thread', FIRST, 'smart', 'off')
     assert cache.match(context(('user', 'first question'), ('user', 'next')), 'smart', 'off')
     cache.record_hit()
     cache.record_miss()
-    assert cache.stats() == {'hits': 2, 'misses': 1, 'hit_rate': 2 / 3, 'active_sessions': 1}
+    assert cache.stats() == {'hits': 2, 'misses': 2, 'hit_rate': 0.5, 'active_sessions': 1,
+                             'saved_tokens': 0, 'evictions': 0}
+
+
+def test_match_records_misses_without_entries(clock):
+    cache = SessionCache()
+    assert cache.match(FIRST, 'smart', 'off') is None
+    stats = cache.stats()
+    assert (stats['hits'], stats['misses'], stats['hit_rate']) == (0, 1, 0.0)
+
+
+def test_hit_refreshes_ttl(clock):
+    cache = SessionCache(ttl=100)
+    cache.save('a', 'thread', FIRST, 'smart', 'off')
+    clock.now += 90
+    assert cache.match(context(('user', 'first question'), ('user', 'next')), 'smart', 'off') is not None
+    clock.now += 90
+    assert cache.match(context(('user', 'first question'), ('user', 'again')), 'smart', 'off') is not None
+    assert cache.stats()['active_sessions'] == 1
+
+
+def test_per_account_limit_evicts_oldest(clock):
+    cache = SessionCache(max_entries=10, max_per_account=2)
+    for index in range(3):
+        cache.save('a', f'a{index}', FIRST, 'smart', 'off')
+        clock.now += 1
+    cache.save('b', 'b0', FIRST, 'smart', 'off')
+    ids = [entry['thread_id'] for entry in cache.list_sessions()]
+    assert 'a0' not in ids and 'a2' in ids and 'b0' in ids
+    assert cache.stats()['evictions'] == 1
+
+
+def test_saved_tokens_are_tracked():
+    cache = SessionCache()
+    cache.record_saved(120)
+    cache.record_saved(0)
+    cache.record_saved(-5)
+    cache.record_saved('30')
+    assert cache.stats()['saved_tokens'] == 150
 
 
 @pytest.fixture
