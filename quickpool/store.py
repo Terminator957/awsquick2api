@@ -13,14 +13,14 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 
 from .api_keys import generate_api_key
-from .models import DEFAULT_MODEL, AccountCreate, ApiKeyCreate, account_number
+from .models import DEFAULT_MODEL, AccountCreate, ApiKeyCreate, UserCreate, account_number
 
 
 _API_KEY_SELECT = """
-    SELECT id, name, key_prefix, notes, group_name, enabled, daily_limit, expires_at,
-           requests_total, last_used, created_at,
+    SELECT k.id, k.name, k.key_prefix, k.notes, k.group_name, k.enabled, k.daily_limit, k.expires_at,
+           k.requests_total, k.last_used, k.created_at, k.user_id, u.name AS user_name,
            (SELECT COUNT(*) FROM requests WHERE api_key_id=k.id AND created_at>=?) AS requests_today
-    FROM api_keys k
+    FROM api_keys k LEFT JOIN users u ON u.id=k.user_id
 """
 _SETTINGS_DEFAULTS = {
     "scheduling_strategy": "weighted",
@@ -81,6 +81,14 @@ class Store:
                 requests_total INTEGER NOT NULL DEFAULT 0, last_used REAL NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1, group_name TEXT NOT NULL DEFAULT '',
+                allowed_models TEXT NOT NULL DEFAULT '[]',
+                max_thinking_effort TEXT NOT NULL DEFAULT '', smart_default_effort TEXT NOT NULL DEFAULT '',
+                daily_request_limit INTEGER NOT NULL DEFAULT 0, daily_token_limit INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
         self.db.commit()
@@ -102,6 +110,14 @@ class Store:
             self.db.execute('ALTER TABLE requests ADD COLUMN session_hit INTEGER NOT NULL DEFAULT 0')
         if 'api_key_id' not in req_columns:
             self.db.execute("ALTER TABLE requests ADD COLUMN api_key_id TEXT NOT NULL DEFAULT ''")
+        for name, definition in {'input_tokens': 'INTEGER NOT NULL DEFAULT 0',
+                                 'output_tokens': 'INTEGER NOT NULL DEFAULT 0',
+                                 'user_id': "TEXT NOT NULL DEFAULT ''"}.items():
+            if name not in req_columns:
+                self.db.execute(f'ALTER TABLE requests ADD COLUMN {name} {definition}')
+        key_columns = {row[1] for row in self.db.execute('PRAGMA table_info(api_keys)')}
+        if 'user_id' not in key_columns:
+            self.db.execute("ALTER TABLE api_keys ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
         self.db.execute("CREATE INDEX IF NOT EXISTS requests_api_key_created ON requests(api_key_id, created_at)")
         self.db.commit()
 
@@ -251,21 +267,108 @@ class Store:
         with self.lock, self.db:
             self.db.execute("DELETE FROM session_cache WHERE account_id=?", (account_id,))
 
+    @staticmethod
+    def _user_public(row):
+        if row is None:
+            return None
+        return dict(row) | {'enabled': bool(row['enabled']), 'allowed_models': json.loads(row['allowed_models'])}
+
+    def list_users(self):
+        today = int(time.time() // 86400 * 86400)
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT u.*, (SELECT COUNT(*) FROM api_keys k WHERE k.user_id=u.id) AS key_count, "
+                "(SELECT COUNT(*) FROM requests r WHERE r.user_id=u.id AND r.created_at>=?) AS requests_today, "
+                "(SELECT COUNT(*) FROM requests r WHERE r.user_id=u.id) AS requests_total, "
+                "(SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM requests r "
+                "WHERE r.user_id=u.id AND r.created_at>=?) AS tokens_today, "
+                "(SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM requests r "
+                "WHERE r.user_id=u.id) AS tokens_total FROM users u ORDER BY u.created_at", (today, today))
+            return [self._user_public(row) for row in rows]
+
+    def get_user(self, user_id):
+        today = int(time.time() // 86400 * 86400)
+        with self.lock:
+            row = self.db.execute(
+                "SELECT u.*, (SELECT COUNT(*) FROM api_keys k WHERE k.user_id=u.id) AS key_count, "
+                "(SELECT COUNT(*) FROM requests r WHERE r.user_id=u.id AND r.created_at>=?) AS requests_today, "
+                "(SELECT COUNT(*) FROM requests r WHERE r.user_id=u.id) AS requests_total, "
+                "(SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM requests r "
+                "WHERE r.user_id=u.id AND r.created_at>=?) AS tokens_today, "
+                "(SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM requests r "
+                "WHERE r.user_id=u.id) AS tokens_total FROM users u WHERE u.id=?", (today, today, user_id)).fetchone()
+        return self._user_public(row)
+
+    def create_user(self, data: UserCreate | None = None, **kwargs):
+        if data is None:
+            data = UserCreate(**kwargs)
+        user_id = str(uuid.uuid4())
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO users(id,name,notes,enabled,group_name,allowed_models,max_thinking_effort,"
+                "smart_default_effort,daily_request_limit,daily_token_limit,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (user_id, data.name, data.notes, data.enabled, data.group_name,
+                 json.dumps(data.allowed_models), data.max_thinking_effort, data.smart_default_effort,
+                 data.daily_request_limit, data.daily_token_limit, time.time()))
+        return self.get_user(user_id)
+
+    def patch_user(self, user_id, values):
+        allowed = {'name', 'notes', 'enabled', 'group_name', 'allowed_models',
+                   'max_thinking_effort', 'smart_default_effort', 'daily_request_limit', 'daily_token_limit'}
+        if not values or set(values) - allowed:
+            return self.get_user(user_id)
+        values = values | ({'allowed_models': json.dumps(values['allowed_models'])}
+                           if 'allowed_models' in values else {})
+        with self.lock, self.db:
+            self.db.execute('UPDATE users SET ' + ','.join(f'{key}=?' for key in values) + ' WHERE id=?',
+                            (*values.values(), user_id))
+        return self.get_user(user_id)
+
+    update_user = patch_user
+
+    def delete_user(self, user_id):
+        with self.lock, self.db:
+            self.db.execute("UPDATE api_keys SET user_id='' WHERE user_id=?", (user_id,))
+            return self.db.execute('DELETE FROM users WHERE id=?', (user_id,)).rowcount > 0
+
+    def account_token_totals(self):
+        with self.lock:
+            rows = self.db.execute(
+                'SELECT account_id, '
+                'COALESCE(SUM(CASE WHEN created_at>=? THEN input_tokens+output_tokens ELSE 0 END),0) AS tokens_24h, '
+                'COALESCE(SUM(input_tokens+output_tokens),0) AS tokens_total, '
+                'COALESCE(SUM(input_tokens),0) AS input_tokens_total, '
+                'COALESCE(SUM(output_tokens),0) AS output_tokens_total '
+                "FROM requests WHERE account_id IS NOT NULL AND account_id!='' GROUP BY account_id",
+                (time.time() - 86400,)).fetchall()
+        return {row['account_id']: {key: row[key] for key in row.keys() if key != 'account_id'} for row in rows}
+
+    def pool_token_totals(self):
+        with self.lock:
+            row = self.db.execute(
+                'SELECT COALESCE(SUM(CASE WHEN created_at>=? THEN input_tokens+output_tokens ELSE 0 END),0) AS tokens_24h, '
+                'COALESCE(SUM(input_tokens+output_tokens),0) AS tokens_total, '
+                'COALESCE(SUM(input_tokens),0) AS input_tokens_total, '
+                'COALESCE(SUM(output_tokens),0) AS output_tokens_total FROM requests',
+                (time.time() - 86400,)).fetchone()
+        return dict(row)
+
     def list_api_keys(self):
         with self.lock:
-            rows = self.db.execute(_API_KEY_SELECT + " ORDER BY created_at", (int(time.time() // 86400 * 86400),))
+            rows = self.db.execute(_API_KEY_SELECT + " ORDER BY k.created_at", (int(time.time() // 86400 * 86400),))
             return [dict(row) | {"enabled": bool(row["enabled"])} for row in rows]
 
     def get_api_key(self, key_id):
         with self.lock:
             row = self.db.execute(
-                _API_KEY_SELECT + " WHERE id=?", (int(time.time() // 86400 * 86400), key_id)).fetchone()
+                _API_KEY_SELECT + " WHERE k.id=?", (int(time.time() // 86400 * 86400), key_id)).fetchone()
         return dict(row) | {"enabled": bool(row["enabled"])} if row is not None else None
 
     def get_api_key_by_hash(self, h):
         with self.lock:
             row = self.db.execute(
-                _API_KEY_SELECT + " WHERE key_hash=?", (int(time.time() // 86400 * 86400), h)).fetchone()
+                _API_KEY_SELECT + " WHERE k.key_hash=?", (int(time.time() // 86400 * 86400), h)).fetchone()
         return dict(row) | {"enabled": bool(row["enabled"])} if row is not None else None
 
     def create_api_key(self, data: ApiKeyCreate | None = None, **kwargs):
@@ -275,15 +378,15 @@ class Store:
         plaintext, key_hash, key_prefix = generate_api_key()
         with self.lock, self.db:
             self.db.execute(
-                "INSERT INTO api_keys(id,name,key_hash,key_prefix,notes,group_name,daily_limit,expires_at,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO api_keys(id,name,key_hash,key_prefix,notes,group_name,daily_limit,expires_at,created_at,user_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (key_id, data.name, key_hash, key_prefix, data.notes, data.group_name,
-                 data.daily_limit, data.expires_at or 0, time.time()),
+                 data.daily_limit, data.expires_at or 0, time.time(), data.user_id),
             )
             return self.get_api_key(key_id) | {"plaintext_key": plaintext}
 
     def patch_api_key(self, key_id, values):
-        allowed = {"name", "notes", "group_name", "enabled", "daily_limit", "expires_at"}
+        allowed = {"name", "notes", "group_name", "enabled", "daily_limit", "expires_at", "user_id"}
         if not values or set(values) - allowed:
             return self.get_api_key(key_id)
         if "expires_at" in values and values["expires_at"] is None:
@@ -324,14 +427,16 @@ class Store:
     update_settings = patch_settings
 
     def log(self, request_id, account_id, status, duration_ms, output_chars, error="", *,
-            model=DEFAULT_MODEL, session_hit: bool = False, api_key_id: str = ""):
+            model=DEFAULT_MODEL, session_hit: bool = False, api_key_id: str = "",
+            input_tokens: int = 0, output_tokens: int = 0, user_id: str = ""):
         with self.lock, self.db:
             self.db.execute(
                 "INSERT INTO requests"
-                "(id,created_at,account_id,model,status,duration_ms,output_chars,error,session_hit,api_key_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "(id,created_at,account_id,model,status,duration_ms,output_chars,error,session_hit,api_key_id,"
+                "input_tokens,output_tokens,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (request_id, time.time(), account_id, model, status,
-                 duration_ms, output_chars, error[:200], 1 if session_hit else 0, api_key_id))
+                 duration_ms, output_chars, error[:200], 1 if session_hit else 0, api_key_id,
+                 input_tokens, output_tokens, user_id))
             # Bounded local retention; never log prompts, cookies, or raw upstream bodies.
             self.db.execute("DELETE FROM requests WHERE id IN (SELECT id FROM requests "
                             "ORDER BY created_at DESC LIMIT -1 OFFSET 10000)")

@@ -50,7 +50,7 @@ def test_key_model_bounds(model):
     assert ApiKeyCreate(name="key").daily_limit == 0
     assert ApiKeyCreate(name="key").expires_at is None
     assert ApiKeyPatch().model_dump() == dict.fromkeys(
-        ("name", "notes", "group_name", "enabled", "daily_limit", "expires_at"))
+        ("name", "notes", "group_name", "enabled", "daily_limit", "expires_at", "user_id"))
     assert ApiKeyPatch(enabled=False).enabled is False
 
 
@@ -117,6 +117,7 @@ def test_api_key_crud(store, monkeypatch):
         "id": key_id, "name": "key", "key_prefix": plaintext[:10] + "…" + plaintext[-4:],
         "notes": "note", "group_name": "group", "enabled": True, "daily_limit": 20,
         "expires_at": now + 60, "requests_total": 0, "requests_today": 0, "last_used": 0, "created_at": now,
+        "user_id": "", "user_name": None,
     }
     assert created == metadata | {"plaintext_key": plaintext}
     assert created["enabled"] is True
@@ -255,7 +256,8 @@ def test_store_migrates_old_database(tmp_path):
         assert store.logs() == [{
             "id": "old-request", "created_at": 2000, "account_id": "old-account", "model": "amazon-fast",
             "status": 502, "duration_ms": 123, "output_chars": 0, "error": "old error", "session_hit": False,
-            "api_key_id": "", "account_name": "Existing", "api_key_name": None,
+            "api_key_id": "", "input_tokens": 0, "output_tokens": 0, "user_id": "",
+            "account_name": "Existing", "api_key_name": None,
         }]
     finally:
         store.close()
