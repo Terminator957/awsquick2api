@@ -112,30 +112,49 @@ class Prepared:
         else:
             self.prompt = ('Conversation history (role and tool call IDs are significant):\n'
                            + json.dumps(messages, ensure_ascii=False))
+        instructions = ''
         if self.tools:
-            self.prompt += ('\n\nCLIENT FUNCTION ADAPTER: Return only one JSON object. '
+            instructions += ('CLIENT FUNCTION ADAPTER: Return only one JSON object. '
                 'To request client-side execution return {"tool_calls":[{"name":"declared_name","arguments":{}}]}. '
                 'Otherwise return {"content":"your answer"}. Never claim a function was executed. '
                 'Use only the declared functions, conform to their JSON schemas. '
                 'tool_choice=' + json.dumps(self.choice) + '; parallel_tool_calls=' + str(request.parallel_tool_calls)
                 + '. choice=none forbids tool_calls; required requires them; a named choice requires that function. '
-                + 'Declared functions: ' + json.dumps(self.tools, ensure_ascii=False))
+                + 'Declared functions are in tools below.')
         if self.format['type'] != 'text':
-            self.prompt += '\nReturn a JSON object only, without markdown fences.'
+            instructions += '\nReturn a JSON object only, without markdown fences.'
             if self.format['type'] == 'json_schema':
-                self.prompt += ' Conform to JSON Schema: ' + json.dumps(self.format['json_schema']['schema'])
-        if len(self.prompt) > 200_000:
-            raise CompatibilityError('转换后的上下文过长')
+                instructions += ' Conform to JSON Schema: ' + json.dumps(self.format['json_schema']['schema'])
+        self.context = {'messages': messages, 'tools': self.tools, 'tool_choice': self.choice,
+                        'parallel_tool_calls': request.parallel_tool_calls, 'response_format': self.format,
+                        'adapter_instructions': instructions}
+        if instructions:
+            self.prompt += '\n\n' + instructions
+        if self.tools:
+            self.prompt += '\nDeclared functions: ' + json.dumps(self.tools, ensure_ascii=False)
+        if len(json.dumps(self.context, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) > 5*1024*1024:
+            raise CompatibilityError('转换后的上下文附件超过 5 MiB')
 
     def result(self, text):
         message, finish = {'role':'assistant','content':text}, 'stop'
         if not self.buffered:
             return message, finish
+        commentary = None
         try:
             stripped = text.strip()
             if stripped.startswith('```') and stripped.endswith('```'):
                 stripped = stripped.split('\n', 1)[1].rsplit('```', 1)[0].strip()
-            value = json.loads(stripped)
+            try:
+                value = json.loads(stripped)
+            except ValueError:
+                # Quick can narrate native attachment reads before client tool JSON.
+                start = stripped.find('{')
+                if not self.tools or self.format['type'] != 'text' or start < 1:
+                    raise
+                value = json.loads(stripped[start:])
+                if not isinstance(value, dict) or not value.get('tool_calls'):
+                    raise ValueError
+                commentary = stripped[:start].strip()
             if not isinstance(value, dict):
                 raise TypeError
         except (ValueError, TypeError, IndexError):
@@ -159,12 +178,12 @@ class Prepared:
                     check_instance(arguments, self.functions[name].get('parameters', {'type':'object'}))
                     converted.append({'id':'call_'+uuid.uuid4().hex, 'type':'function',
                         'function':{'name':name,'arguments':json.dumps(arguments,ensure_ascii=False)}})
-                message = {'role':'assistant','content':None, 'tool_calls':converted}
+                message = {'role':'assistant','content':commentary, 'tool_calls':converted}
                 finish = 'tool_calls'
                 if self.request.functions:
                     if len(converted) != 1:
                         raise CompatibilityError('旧版 functions 接口只允许一个调用')
-                    message = {'role':'assistant','content':None,'function_call':converted[0]['function']}
+                    message = {'role':'assistant','content':commentary,'function_call':converted[0]['function']}
                     finish = 'function_call'
                 return message, finish
             if self.choice == 'required' or self.selected:

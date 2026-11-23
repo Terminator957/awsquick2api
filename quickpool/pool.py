@@ -31,7 +31,7 @@ class Pool:
             self.store.patch_account(account["id"], {"last_used": time.time()})
             return account
 
-    async def release(self, account_id: str, status=200, retry_after=60, message=""):
+    async def release(self, account_id: str, status=200, retry_after=60, message="", *, penalize=True):
         async with self.lock:
             self.inflight[account_id] = max(0, self.inflight[account_id] - 1)
             account = self.store.account(account_id)
@@ -41,7 +41,7 @@ class Pool:
                 values = {"successes": account["successes"] + 1}
                 if account['state'] != 'expired':
                     values.update(state="ready", last_error="", cooldown_until=0)
-            elif status == 499:
+            elif status == 499 or not penalize or (400 <= status < 500 and status not in (401, 403, 429)):
                 return
             else:
                 values = {"failures": account["failures"] + 1, "last_error": message[:200]}

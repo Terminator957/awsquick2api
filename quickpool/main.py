@@ -272,17 +272,19 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 break
             tried.add(account["id"])
             iterator = app.state.upstream.stream(account, messages, agent_mode=value.mode,
-                                                 thinking_effort=value.effort, images=prepared.images)
+                                                 thinking_effort=value.effort, images=prepared.images,
+                                                 context=prepared.context)
             try:
                 first = await anext(iterator)
                 break
             except UpstreamError as exc:
                 last_error = exc
                 await iterator.aclose()
-                await app.state.pool.release(account["id"], exc.status, exc.retry_after, str(exc))
+                await app.state.pool.release(account["id"], exc.status, exc.retry_after, str(exc),
+                                             penalize=exc.retryable)
                 app.state.store.log(uuid.uuid4().hex, account["id"], exc.status,
                                     round((time.monotonic() - started) * 1000), 0, str(exc), model=value.model)
-                if exc.status not in (401, 403, 429, 502, 503, 504) and exc.status < 500:
+                if not exc.retryable:
                     break
             except BaseException:
                 await iterator.aclose()
@@ -290,14 +292,16 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 raise
         if not first or account is None or iterator is None:
             message = str(last_error) if last_error else "没有可用账号：请先添加并授权账号，或等待冷却结束"
-            if last_error and last_error.status == 400:
-                return JSONResponse({'error':{'message':message,'type':'invalid_request_error'}},400)
+            if last_error and not last_error.retryable:
+                kind = "invalid_request_error" if last_error.status < 500 else "upstream_error"
+                return JSONResponse({"error": {"message": message, "type": kind}}, last_error.status)
             return JSONResponse({"error": {"message": message, "type": "upstream_unavailable",
                                            "code": "no_available_account"}}, 503, headers={"Retry-After": "10"})
 
         validated_result = []
 
         async def output():
+            penalize = True
             status, error, chars, retry_after = 200, "", 0, 60
             buffered = [first] if prepared.buffered else None
             try:
@@ -311,17 +315,19 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 if buffered is not None:
                     validated_result.append(prepared.result(''.join(buffered)))
             except CompatibilityError as exc:
+                penalize = False
                 status, error = 502, str(exc)
                 raise
             except UpstreamError as exc:
                 status, error, retry_after = exc.status, str(exc), exc.retry_after
+                penalize = exc.retryable
                 raise
             except (asyncio.CancelledError, GeneratorExit):
                 status = 499
                 raise
             finally:
                 await iterator.aclose()
-                await app.state.pool.release(account["id"], status, retry_after, error)
+                await app.state.pool.release(account["id"], status, retry_after, error, penalize=penalize)
                 app.state.store.log(request_id, account["id"], status,
                                     round((time.monotonic() - started) * 1000), chars, error, model=value.model)
 
@@ -334,7 +340,9 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 text = ''.join([delta async for delta in output()])
                 message, finish = validated_result[0]
             except (UpstreamError, CompatibilityError) as exc:
-                return JSONResponse({'error':{'message':str(exc),'type':'upstream_error'}},502)
+                status = exc.status if isinstance(exc, UpstreamError) else 502
+                kind = 'invalid_request_error' if status < 500 else 'upstream_error'
+                return JSONResponse({'error':{'message':str(exc),'type':kind}},status)
             if value.stream:
                 async def buffered_sse():
                     delta = {k:v for k,v in message.items() if k != 'role'}
@@ -374,7 +382,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         try:
             text = "".join([delta async for delta in output()])
         except UpstreamError as exc:
-            return JSONResponse({"error": {"message": str(exc), "type": "upstream_error"}}, 502)
+            return JSONResponse({"error": {"message": str(exc),
+                "type": "invalid_request_error" if exc.status < 500 else "upstream_error"}}, exc.status)
         return {"id": request_id, "object": "chat.completion", "created": created, "model": value.model,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                              "finish_reason": "stop"}]}

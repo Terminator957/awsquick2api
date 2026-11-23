@@ -41,9 +41,45 @@ def test_model_vocabulary_reaches_upstream_unchanged(gateway, protocol, model):
     assert native['agent_mode'] == mode and native['thinking_effort'] == (effort or 'off')
 
 
+@pytest.mark.parametrize('protocol', ['chat/completions', 'responses', 'messages'])
+@pytest.mark.parametrize('model, mode', [
+    ('opus', 'smart'), ('sonnet', 'balanced'), ('haiku', 'fast'),
+    ('claude-opus-4-6', 'smart'), ('claude-sonnet-4-6', 'balanced'),
+    ('claude-haiku-4-5-20251001', 'fast'), ('claude-opus-latest', 'smart'),
+    ('claude-3-7-sonnet-20250219', 'balanced'), ('claude-3-haiku-20240307', 'fast'),
+])
+def test_claude_model_alias_selects_native_mode(gateway, protocol, model, mode):
+    client, _app, _admin, key, backend = gateway
+    add(gateway, state='ready')
+    response = client.post('/v1/' + protocol, headers=key, json=payload(protocol, model=model))
+    assert response.status_code == 200, response.text
+    assert response.json()['model'] == model
+    native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type'] == 'user_message')
+    assert native['agent_mode'] == mode and native['thinking_effort'] == 'off'
+
+
+@pytest.mark.parametrize('model, mode', [('claude-opus-4-6', 'smart'),
+                                       ('claude-sonnet-4-6', 'balanced'), ('claude-haiku-4-5', 'fast')])
+def test_claude_messages_stream_preserves_alias_and_thinking(gateway, model, mode):
+    client, _app, _admin, key, backend = gateway
+    add(gateway, state='ready')
+    body = payload('messages', True, model=model, thinking={'type': 'enabled', 'budget_tokens': 8192})
+    response = client.post('/v1/messages', headers=key, json=body)
+    assert response.status_code == 200, response.text
+    data = events(response)
+    assert data[0]['message']['model'] == model and data[-1]['type'] == 'message_stop'
+    native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type'] == 'user_message')
+    assert native['agent_mode'] == mode and native['thinking_effort'] == 'medium'
+    before = len(backend.connections)
+    counted = client.post('/v1/messages/count_tokens', headers=key, json=body)
+    assert counted.status_code == 200 and counted.json()['input_tokens'] > 0
+    assert len(backend.connections) == before
+
+
 @pytest.mark.parametrize('protocol', ['responses', 'messages'])
 @pytest.mark.parametrize('old', ['amazon-quick', 'amazon-quick-high', 'quick-medium',
-                               'amazon-balance', 'amazon-balance-high', 'balance-low', 'hark'])
+                               'amazon-balance', 'amazon-balance-high', 'balance-low', 'hark',
+                               'claude-unknown-4-6', 'claude-sonnet-invalid', 'gpt-unknown'])
 def test_removed_model_names_are_rejected(gateway, protocol, old):
     client, _app, _admin, key, backend = gateway
     add(gateway, state='ready')

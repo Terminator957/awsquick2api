@@ -64,14 +64,12 @@ class Message(BaseModel):
     def validate_parts(self):
         if self.content is None and not (self.role == 'assistant' and (self.tool_calls or self.function_call)):
             raise ValueError('消息必须含 content，或 assistant.tool_calls')
-        if isinstance(self.content, str) and len(self.content) > 120_000:
-            raise ValueError('单条文本过长')
         if isinstance(self.content, list):
             if len(self.content) > 32:
                 raise ValueError('消息内容分段过多')
             for part in self.content:
                 if part.get('type') == 'text':
-                    if not isinstance(part.get('text'), str) or len(part['text']) > 120_000:
+                    if not isinstance(part.get('text'), str):
                         raise ValueError('text 分段无效')
                 elif part.get('type') == 'image_url':
                     image = part.get('image_url')
@@ -93,10 +91,12 @@ MODEL_IDS = tuple('amazon-' + mode + suffix for mode in NATIVE_MODES
                   for suffix in ('', '-low', '-medium', '-high'))
 MODEL_ALIASES = {mode + suffix: 'amazon-' + mode + suffix
                  for mode in NATIVE_MODES for suffix in ('', '-low', '-medium', '-high')}
+MODEL_ALIASES.update(opus='amazon-smart', sonnet='amazon-balanced', haiku='amazon-fast')
 
 
 def model_options(model: str):
-    canonical = MODEL_ALIASES.get(model, model)
+    claude = re.fullmatch(r'claude-(?:\d+(?:-\d+)*-)?(opus|sonnet|haiku)(?:-\d+(?:-\d+)*|-latest)?', model)
+    canonical = MODEL_ALIASES.get(claude[1] if claude else model, model)
     if canonical not in MODEL_IDS:
         raise ValueError('未知模型名，请从 GET /v1/models 选择')
     parts = canonical.removeprefix('amazon-').split('-')
@@ -133,9 +133,6 @@ class ChatRequest(BaseModel):
         model_options(self.model)
         if self.messages[-1].role not in ('user', 'tool', 'function'):
             raise ValueError('最后一条消息必须为 user 或工具执行结果')
-        if sum(len(m.content) if isinstance(m.content,str) else sum(len(p.get('text',''))
-            for p in (m.content or [])) for m in self.messages) > 150_000:
-            raise ValueError("上下文过长")
         if self.model_extra and 'audio' in self.model_extra:
             raise ValueError('暂不支持音频输出')
         if self.tools and self.functions:
