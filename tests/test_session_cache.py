@@ -308,3 +308,41 @@ async def test_invalid_delta_offset_uses_existing_fresh_path(native, conversatio
     assert socket.sent[2]['type'] == 'session_create'
     assert socket.sent[-1]['payload']['thread_id'] != 'reused'
     assert socket.sent[-1]['payload']['text'] == 'FULL'
+
+
+def test_sqlite_persistence_survives_restart(tmp_path):
+    from quickpool.store import Store
+
+    store1 = Store(tmp_path)
+    cache1 = SessionCache(ttl=1800.0, store=store1)
+    cache1.save('acc-1', 'thread-persist', FIRST, 'smart', 'off')
+    cache1.save('acc-2', 'thread-drop', FIRST, 'smart', 'off')
+    cache1.invalidate('thread-drop')
+    store1.close()
+
+    store2 = Store(tmp_path)
+    cache2 = SessionCache(ttl=1800.0, store=store2)
+    assert cache2.stats()['active_sessions'] == 1
+    follow_up = context(('user', 'first question'), ('assistant', 'ok'), ('user', 'second'))
+    entry, offset = cache2.match(follow_up, 'smart', 'off')
+    assert (entry.account_id, entry.thread_id, offset) == ('acc-1', 'thread-persist', 2)
+    cache2.invalidate_account('acc-1')
+    store2.close()
+
+    store3 = Store(tmp_path)
+    cache3 = SessionCache(ttl=1800.0, store=store3)
+    assert cache3.stats()['active_sessions'] == 0
+    store3.close()
+
+
+def test_sqlite_persistence_skips_expired_rows(tmp_path):
+    from quickpool.store import Store
+
+    store1 = Store(tmp_path)
+    store1.save_session('expired-thread', 'acc-1', 'cfg', ('h1',), 1, ttl=0.0)
+    store1.close()
+
+    store2 = Store(tmp_path)
+    cache2 = SessionCache(ttl=1800.0, store=store2)
+    assert cache2.stats()['active_sessions'] == 0
+    store2.close()

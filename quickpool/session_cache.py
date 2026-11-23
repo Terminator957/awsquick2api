@@ -32,10 +32,22 @@ def _context_config(context, agent_mode, thinking_effort):
 
 
 class SessionCache:
-    def __init__(self, max_entries=256, ttl=1800.0):
+    def __init__(self, max_entries=256, ttl=1800.0, store=None):
         self.max_entries, self.ttl = max_entries, ttl
         self.hits = self.misses = 0
+        self._store = store if store is not None and hasattr(store, 'load_sessions') else None
         self._entries: dict[str, SessionEntry] = {}
+        if self._store is not None:
+            now = time.monotonic()
+            for row in self._store.load_sessions(limit=max_entries):
+                remaining = min(self.ttl, max(0.0, row['remaining']))
+                if remaining <= 0:
+                    continue
+                self._entries[row['thread_id']] = SessionEntry(
+                    row['account_id'], row['thread_id'], row['config_hash'],
+                    tuple(row['msg_hashes']), now - (self.ttl - remaining),
+                    turns=row['turns'],
+                )
 
     def match(self, context, agent_mode, thinking_effort, available_account_ids=None) -> tuple[SessionEntry, int] | None:
         now = time.monotonic()
@@ -69,22 +81,30 @@ class SessionCache:
         now = time.monotonic()
         self._expire(now)
         previous = self._entries.get(thread_id)
-        self._entries[thread_id] = SessionEntry(
+        entry = SessionEntry(
             account_id, thread_id, _context_config(context, agent_mode, thinking_effort),
             tuple(map(hash_message, context.get('messages') or [])), now,
             turns=previous.turns + 1 if previous else 1,
         )
+        self._entries[thread_id] = entry
+        if self._store is not None:
+            self._store.save_session(entry.thread_id, entry.account_id, entry.config_hash,
+                                     entry.msg_hashes, entry.turns, self.ttl)
         while len(self._entries) > self.max_entries:
             oldest = min(self._entries.values(), key=lambda entry: entry.last_used)
             self.invalidate(oldest.thread_id)
 
     def invalidate(self, thread_id):
         self._entries.pop(thread_id, None)
+        if self._store is not None:
+            self._store.delete_session(thread_id)
 
     def invalidate_account(self, account_id):
         for entry in list(self._entries.values()):
             if entry.account_id == account_id:
-                self.invalidate(entry.thread_id)
+                self._entries.pop(entry.thread_id, None)
+        if self._store is not None:
+            self._store.delete_account_sessions(account_id)
 
     def stats(self):
         self._expire(time.monotonic())

@@ -88,7 +88,7 @@ class Upstream:
         self.connect = connect or websocket_connect
         self.http_transport = transport
         self.outpost_ids = {}
-        self.session_cache = session_cache if session_cache is not None else SessionCache()
+        self.session_cache = session_cache if session_cache is not None else SessionCache(store=store)
         self.app_ping_interval = app_ping_interval
 
     async def session(self, account_id):

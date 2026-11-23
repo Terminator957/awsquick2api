@@ -48,6 +48,13 @@ class Store:
                 id INTEGER PRIMARY KEY, created_at REAL NOT NULL, account_id TEXT NOT NULL,
                 event TEXT NOT NULL, details TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS session_cache (
+                thread_id TEXT PRIMARY KEY, account_id TEXT NOT NULL,
+                config_hash TEXT NOT NULL, msg_hashes TEXT NOT NULL,
+                turns INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS session_cache_expires ON session_cache(expires_at);
         """)
         self.db.commit()
         columns = {row[1] for row in self.db.execute('PRAGMA table_info(accounts)')}
@@ -164,7 +171,51 @@ class Store:
 
     def delete_account(self, account_id):
         with self.lock, self.db:
+            self.db.execute("DELETE FROM session_cache WHERE account_id=?", (account_id,))
             self.db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+
+    def load_sessions(self, limit: int = 256):
+        now = time.time()
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM session_cache WHERE expires_at<=?", (now,))
+            rows = self.db.execute(
+                "SELECT thread_id,account_id,config_hash,msg_hashes,turns,expires_at "
+                "FROM session_cache ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        result = []
+        for row in rows:
+            try:
+                hashes = tuple(json.loads(row['msg_hashes']))
+            except (ValueError, TypeError):
+                continue
+            result.append({
+                'thread_id': row['thread_id'],
+                'account_id': row['account_id'],
+                'config_hash': row['config_hash'],
+                'msg_hashes': hashes,
+                'turns': int(row['turns']),
+                'remaining': max(0.0, float(row['expires_at']) - now),
+            })
+        return result
+
+    def save_session(self, thread_id: str, account_id: str, config_hash: str,
+                     msg_hashes: tuple[str, ...], turns: int, ttl: float):
+        now = time.time()
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO session_cache"
+                "(thread_id,account_id,config_hash,msg_hashes,turns,updated_at,expires_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (thread_id, account_id, config_hash, json.dumps(list(msg_hashes)),
+                 int(turns), now, now + max(0.0, float(ttl))),
+            )
+
+    def delete_session(self, thread_id: str):
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM session_cache WHERE thread_id=?", (thread_id,))
+
+    def delete_account_sessions(self, account_id: str):
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM session_cache WHERE account_id=?", (account_id,))
 
     def log(self, request_id, account_id, status, duration_ms, output_chars, error="", *,
             model=DEFAULT_MODEL, session_hit: bool = False):
