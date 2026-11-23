@@ -19,12 +19,13 @@ class Pool:
         self.lock = asyncio.Lock()
         self.inflight: dict[str, int] = defaultdict(int)
 
-    def eligible_ids(self, excluded: set[str] | None = None) -> set[str]:
+    def eligible_ids(self, excluded: set[str] | None = None, *, group_name: str = '') -> set[str]:
         excluded = excluded or set()
         now = time.time()
         ids = set()
         for a in self.store.accounts():
             if (a["id"] not in excluded and a["enabled"] and a["configured"]
+                    and (not group_name or a.get("group_name", "") == group_name)
                     and a["state"] in ("ready", "cooldown") and a["cooldown_until"] <= now
                     and self.inflight[a["id"]] < a["max_concurrency"]):
                 if self.quotas and is_quota_exhausted(self.quotas.cached(a["id"])):
@@ -32,11 +33,13 @@ class Pool:
                 ids.add(a["id"])
         return ids
 
-    async def acquire(self, excluded: set[str], *, preferred_account_id: str | None = None):
+    async def acquire(self, excluded: set[str], *, preferred_account_id: str | None = None,
+                      group_name: str = ''):
         async with self.lock:
             now = time.time()
             base_eligible = [a for a in self.store.accounts()
                              if a["id"] not in excluded and a["enabled"] and a["configured"]
+                             and (not group_name or a.get("group_name", "") == group_name)
                              and a["state"] in ("ready", "cooldown") and a["cooldown_until"] <= now
                              and self.inflight[a["id"]] < a["max_concurrency"]]
             if not base_eligible:
@@ -53,11 +56,20 @@ class Pool:
                     self.inflight[preferred["id"]] += 1
                     self.store.patch_account(preferred["id"], {"last_used": now})
                     return preferred
-            eligible.sort(key=lambda a: (
-                (self.inflight[a["id"]] + 1) / a["weight"],
-                -remaining_score(self.quotas.cached(a["id"])) if self.quotas else 0.0,
-                a["last_used"],
-            ))
+            store = self.store
+            strategy = store.get_settings().get('scheduling_strategy', 'weighted') if hasattr(store, 'get_settings') else 'weighted'
+
+            def sort_key(a):
+                load = (self.inflight[a["id"]] + 1) / a["weight"]
+                rem = -remaining_score(self.quotas.cached(a["id"])) if self.quotas else 0.0
+                lu = a["last_used"]
+                if strategy == 'quota_first':
+                    return rem, load, lu
+                if strategy == 'round_robin':
+                    return lu, load, rem
+                return load, rem, lu
+
+            eligible.sort(key=sort_key)
             account = eligible[0]
             self.inflight[account["id"]] += 1
             self.store.patch_account(account["id"], {"last_used": now})

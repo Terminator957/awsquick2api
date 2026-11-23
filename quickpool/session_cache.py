@@ -106,6 +106,27 @@ class SessionCache:
         if self._store is not None:
             self._store.delete_account_sessions(account_id)
 
+    def list_sessions(self, account_names: dict[str, str] | None = None) -> list[dict]:
+        now = time.monotonic()
+        self._expire(now)
+        names = account_names or {}
+        return [
+            {'thread_id': entry.thread_id, 'account_id': entry.account_id,
+             'account_name': names.get(entry.account_id, ''), 'turns': entry.turns,
+             'remaining_sec': round(max(0.0, self.ttl - (now - entry.last_used)), 1),
+             'config_hash': entry.config_hash[:8]}
+            for entry in sorted(self._entries.values(), key=lambda entry: entry.last_used, reverse=True)
+        ]
+
+    def clear(self) -> int:
+        thread_ids = list(self._entries)
+        for thread_id in thread_ids:
+            self.invalidate(thread_id)
+        return len(thread_ids)
+
+    def set_ttl(self, ttl: float):
+        self.ttl = float(ttl)
+
     def stats(self):
         self._expire(time.monotonic())
         total = self.hits + self.misses
