@@ -61,6 +61,9 @@ class Store:
                 self.db.execute(f'ALTER TABLE accounts ADD COLUMN {name} {definition}')
         # Cookie/template credentials must never silently become native accounts.
         self.db.execute("UPDATE accounts SET state='unconfigured' WHERE auth_type!='native'")
+        req_columns = {row[1] for row in self.db.execute('PRAGMA table_info(requests)')}
+        if 'session_hit' not in req_columns:
+            self.db.execute('ALTER TABLE requests ADD COLUMN session_hit INTEGER NOT NULL DEFAULT 0')
         self.db.commit()
 
     def _key_file(self, name, factory):
@@ -163,26 +166,59 @@ class Store:
         with self.lock, self.db:
             self.db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
 
-    def log(self, request_id, account_id, status, duration_ms, output_chars, error="", *, model=DEFAULT_MODEL):
+    def log(self, request_id, account_id, status, duration_ms, output_chars, error="", *,
+            model=DEFAULT_MODEL, session_hit: bool = False):
         with self.lock, self.db:
-            self.db.execute("INSERT INTO requests VALUES(?,?,?,?,?,?,?,?)",
-                            (request_id, time.time(), account_id, model, status,
-                             duration_ms, output_chars, error[:200]))
+            self.db.execute(
+                "INSERT INTO requests(id,created_at,account_id,model,status,duration_ms,output_chars,error,session_hit) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (request_id, time.time(), account_id, model, status,
+                 duration_ms, output_chars, error[:200], 1 if session_hit else 0))
             # Bounded local retention; never log prompts, cookies, or raw upstream bodies.
             self.db.execute("DELETE FROM requests WHERE id IN (SELECT id FROM requests "
                             "ORDER BY created_at DESC LIMIT -1 OFFSET 10000)")
 
-    def logs(self, limit=100):
+    def logs(self, limit=100, *, account_id: str | None = None, status: str | None = None):
+        clauses, params = [], []
+        if account_id:
+            clauses.append("r.account_id=?")
+            params.append(account_id)
+        if status == 'ok':
+            clauses.append("r.status=200")
+        elif status == 'error':
+            clauses.append("r.status!=200")
+        elif status and status.isdigit():
+            clauses.append("r.status=?")
+            params.append(int(status))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
         with self.lock:
-            return [dict(row) for row in self.db.execute(
-                "SELECT r.*,a.name AS account_name FROM requests r LEFT JOIN accounts a ON a.id=r.account_id "
-                "ORDER BY r.created_at DESC LIMIT ?", (limit,))]
+            rows = self.db.execute(
+                "SELECT r.*,a.name AS account_name FROM requests r LEFT JOIN accounts a ON a.id=r.account_id"
+                + where + " ORDER BY r.created_at DESC LIMIT ?", tuple(params)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item['session_hit'] = bool(item.get('session_hit', 0))
+            result.append(item)
+        return result
+
+    def account_stats(self, account_id: str):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT COUNT(*) total, COALESCE(SUM(status=200),0) success, "
+                "COALESCE(AVG(CASE WHEN status=200 THEN duration_ms END),0) avg_ms, "
+                "COALESCE(SUM(session_hit=1),0) session_hits "
+                "FROM requests WHERE account_id=? AND created_at>=?",
+                (account_id, time.time() - 86400)).fetchone()
+        return dict(row)
 
     def stats(self):
         with self.lock:
             row = self.db.execute(
                 "SELECT COUNT(*) total, COALESCE(SUM(status=200),0) success, "
-                "COALESCE(AVG(CASE WHEN status=200 THEN duration_ms END),0) avg_ms "
+                "COALESCE(AVG(CASE WHEN status=200 THEN duration_ms END),0) avg_ms, "
+                "COALESCE(SUM(session_hit=1),0) session_hits "
                 "FROM requests WHERE created_at>=?", (time.time() - 86400,)).fetchone()
         return dict(row)
 

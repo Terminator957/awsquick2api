@@ -23,6 +23,7 @@ from .models import (
     MODEL_IDS,
     AccountCreate,
     AccountPatch,
+    BatchAccountAction,
     ChatRequest,
     NativeLoginRequest,
     model_options,
@@ -30,7 +31,7 @@ from .models import (
 from .native_auth import AuthError, NativeAuth
 from .native_upstream import Upstream, UpstreamError
 from .pool import Pool, PoolUnavailable
-from .quota import Quotas
+from .quota import Quotas, is_quota_exhausted
 from .store import Store
 from .transfer import TransferError, export_accounts, import_accounts
 
@@ -48,14 +49,37 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         store = Store(data_dir or Path(os.getenv("QUICKPOOL_DATA_DIR", "data")))
         auth = NativeAuth(store, port=int(os.getenv("QUICKPOOL_CALLBACK_PORT", "18080")), transport=transport)
         app.state.store, app.state.auth = store, auth
-        app.state.pool = Pool(store)
+        app.state.quotas = Quotas(auth, transport)
+        app.state.pool = Pool(store, app.state.quotas)
         app.state.upstream = Upstream(store, auth, connect=ws_connect, transport=transport)
-        app.state.quotas = Quotas(auth,transport)
         auth.start()
+        quota_task = None
+        if transport is None and ws_connect is None:
+            async def refresh_quotas_loop():
+                await asyncio.sleep(5)
+                while True:
+                    sem = asyncio.Semaphore(2)
+                    async def _one(aid):
+                        async with sem:
+                            try:
+                                await app.state.quotas.refresh(aid)
+                            except Exception:
+                                pass
+                    configured = [a['id'] for a in store.accounts() if a['configured'] and a['enabled']]
+                    if configured:
+                        await asyncio.gather(*(_one(aid) for aid in configured))
+                    await asyncio.sleep(300)
+            quota_task = asyncio.create_task(refresh_quotas_loop())
         print(f"QuickPool {__version__} | Admin key: {store.directory / 'admin.key'}", flush=True)
         try:
             yield
         finally:
+            if quota_task is not None:
+                quota_task.cancel()
+                try:
+                    await quota_task
+                except asyncio.CancelledError:
+                    pass
             await auth.close()
             store.close()
 
@@ -118,9 +142,59 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         accounts = app.state.store.accounts()
         for account in accounts:
             account["inflight"] = app.state.pool.inflight[account["id"]]
-            account['quota'] = app.state.quotas.cached(account['id'])
-        return {"accounts": accounts, "stats": app.state.store.stats(), "version": __version__,
-                "auth_mode": "desktop-oauth"}
+            quota = app.state.quotas.cached(account['id'])
+            account['quota'] = quota
+            account['quota_exhausted'] = is_quota_exhausted(quota)
+        cache = getattr(app.state.upstream, 'session_cache', None)
+        cache_stats = cache.stats() if cache is not None else {
+            "hits": 0, "misses": 0, "hit_rate": 0.0, "active_sessions": 0}
+        return {"accounts": accounts, "stats": app.state.store.stats(), "cache_stats": cache_stats,
+                "version": __version__, "auth_mode": "desktop-oauth"}
+
+    @app.get("/api/accounts/{account_id}/detail", dependencies=[Depends(admin)])
+    async def account_detail(account_id: str):
+        account = get_account(account_id)
+        account["inflight"] = app.state.pool.inflight[account_id]
+        quota = app.state.quotas.cached(account_id)
+        account["quota"] = quota
+        account["quota_exhausted"] = is_quota_exhausted(quota)
+        return {
+            "account": account,
+            "stats": app.state.store.account_stats(account_id),
+            "recent_logs": app.state.store.logs(limit=20, account_id=account_id),
+            "auth_events": app.state.store.auth_events(account_id, limit=20),
+        }
+
+    @app.post("/api/accounts/batch", dependencies=[Depends(admin)])
+    async def batch_accounts(body: BatchAccountAction):
+        seen = []
+        for aid in body.account_ids:
+            if aid not in seen and app.state.store.account(aid):
+                seen.append(aid)
+        if body.action in ("enable", "disable"):
+            enabled = body.action == "enable"
+            for aid in seen:
+                app.state.store.patch_account(aid, {"enabled": enabled})
+                if not enabled and getattr(app.state.upstream, 'session_cache', None):
+                    app.state.upstream.session_cache.invalidate_account(aid)
+            return {"action": body.action, "affected": len(seen)}
+        if body.action == "clear_cooldown":
+            affected = 0
+            for aid in seen:
+                acc = app.state.store.account(aid)
+                if acc and (acc["state"] == "cooldown" or acc["cooldown_until"] > 0 or acc["last_error"]):
+                    patch = {"cooldown_until": 0, "last_error": ""}
+                    if acc["state"] == "cooldown":
+                        patch["state"] = "ready"
+                    app.state.store.patch_account(aid, patch)
+                    affected += 1
+            return {"action": body.action, "affected": affected}
+        sem = asyncio.Semaphore(3)
+        async def _refresh_one(aid):
+            async with sem:
+                return aid, await app.state.quotas.refresh(aid)
+        results = dict(await asyncio.gather(*(_refresh_one(aid) for aid in seen)))
+        return {"action": body.action, "affected": len(results), "results": results}
 
     @app.get("/api/config", dependencies=[Depends(admin)])
     async def config():
@@ -239,8 +313,9 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             app.state.store.log(request_id, account_id, status, round((time.monotonic() - start) * 1000), chars, message)
 
     @app.get("/api/logs", dependencies=[Depends(admin)])
-    async def logs():
-        return {"requests": app.state.store.logs()}
+    async def logs(account_id: str | None = None, status: str | None = None, limit: int = 100):
+        bounded = max(1, min(limit, 500))
+        return {"requests": app.state.store.logs(limit=bounded, account_id=account_id or None, status=status or None)}
 
     @app.get("/v1/models", dependencies=[Depends(api_access)])
     async def models():
@@ -265,15 +340,33 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         account = None
         iterator = None
         first = ""
-        for _ in range(3):
+        cache = getattr(app.state.upstream, 'session_cache', None)
+        matched_entry, delta_offset = None, 0
+        if cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
+            eligible_ids = app.state.pool.eligible_ids(tried)
+            match = cache.match(prepared.context, value.mode, value.effort, available_account_ids=eligible_ids)
+            if match is not None:
+                matched_entry, delta_offset = match
+            else:
+                cache.record_miss()
+        stream_state: dict = {}
+        for attempt_idx in range(3):
+            preferred = matched_entry.account_id if (attempt_idx == 0 and matched_entry is not None) else None
             try:
-                account = await app.state.pool.acquire(tried)
+                account = await app.state.pool.acquire(tried, preferred_account_id=preferred)
             except PoolUnavailable:
                 break
             tried.add(account["id"])
-            iterator = app.state.upstream.stream(account, messages, agent_mode=value.mode,
-                                                 thinking_effort=value.effort, images=prepared.images,
-                                                 context=prepared.context)
+            use_reuse = matched_entry is not None and account["id"] == matched_entry.account_id
+            stream_state = {}
+            iterator = app.state.upstream.stream(
+                account, messages, agent_mode=value.mode,
+                thinking_effort=value.effort, images=prepared.images,
+                context=prepared.context,
+                reuse_thread_id=matched_entry.thread_id if use_reuse else None,
+                delta_offset=delta_offset if use_reuse else 0,
+                state_out=stream_state,
+            )
             try:
                 first = await anext(iterator)
                 break
@@ -283,7 +376,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 await app.state.pool.release(account["id"], exc.status, exc.retry_after, str(exc),
                                              penalize=exc.retryable)
                 app.state.store.log(uuid.uuid4().hex, account["id"], exc.status,
-                                    round((time.monotonic() - started) * 1000), 0, str(exc), model=value.model)
+                                    round((time.monotonic() - started) * 1000), 0, str(exc),
+                                    model=value.model, session_hit=bool(stream_state.get('reused')))
                 if not exc.retryable:
                     break
             except BaseException:
@@ -299,6 +393,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                                            "code": "no_available_account"}}, 503, headers={"Retry-After": "10"})
 
         validated_result = []
+        session_reused = bool(stream_state.get('reused'))
+        session_thread_id = stream_state.get('thread_id')
 
         async def output():
             penalize = True
@@ -328,8 +424,13 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             finally:
                 await iterator.aclose()
                 await app.state.pool.release(account["id"], status, retry_after, error, penalize=penalize)
+                if status == 200 and cache is not None and session_thread_id and prepared.context:
+                    cache.save(account["id"], session_thread_id, prepared.context, value.mode, value.effort)
+                elif status != 200 and cache is not None and session_thread_id:
+                    cache.invalidate(session_thread_id)
                 app.state.store.log(request_id, account["id"], status,
-                                    round((time.monotonic() - started) * 1000), chars, error, model=value.model)
+                                    round((time.monotonic() - started) * 1000), chars, error,
+                                    model=value.model, session_hit=session_reused)
 
         def chunk(delta, finish=None):
             return {"id": request_id, "object": "chat.completion.chunk", "created": created,

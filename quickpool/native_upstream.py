@@ -126,7 +126,8 @@ class Upstream:
                              self.outpost_ids.setdefault(account_id, str(uuid.uuid4())))
 
     async def stream(self, account: dict, messages: list[dict], *, agent_mode='smart', thinking_effort='off',
-                     images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0):
+                     images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
+                     state_out: dict | None = None):
         refreshed = False
         try:
             while True:
@@ -138,11 +139,12 @@ class Upstream:
                             session, account['id'], messages, agent_mode=agent_mode,
                             thinking_effort=thinking_effort, images=images, context=context,
                             reuse_thread_id=reuse_thread_id, delta_offset=delta_offset,
+                            state_out=state_out,
                         ):
                             emitted = True
                             yield text
-                    except UpstreamError:
-                        if emitted or not _can_reuse(reuse_thread_id, context, delta_offset):
+                    except UpstreamError as err:
+                        if err.status == 401 or emitted or not _can_reuse(reuse_thread_id, context, delta_offset):
                             raise
                         self.session_cache.invalidate(reuse_thread_id)
                         reuse_thread_id, delta_offset = None, 0
@@ -332,9 +334,13 @@ class Upstream:
         return base
 
     async def _stream(self, session, account_id, messages, *, agent_mode='smart', thinking_effort='off',
-                      images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0):
+                      images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
+                      state_out: dict | None = None):
         reuse = _can_reuse(reuse_thread_id, context, delta_offset)
         thread_id = reuse_thread_id if reuse else str(uuid.uuid4())
+        if state_out is not None:
+            state_out['thread_id'] = thread_id
+            state_out['reused'] = reuse
         decoder, text = NativeMessageDecoder(session.transport), NativeTextEvents(thread_id)
         url, headers = session.connection()
         if reuse:

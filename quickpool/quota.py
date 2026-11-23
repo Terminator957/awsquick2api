@@ -48,6 +48,36 @@ def gateway_usage(data):
                                                  'resumeInMinutes':rate.get('estimatedMinutesToResume')}}
 
 
+def is_quota_exhausted(quota: dict | None) -> bool:
+    if not isinstance(quota, dict) or quota.get('status') != 'available':
+        return False
+    session = quota.get('session') or {}
+    if isinstance(session, dict):
+        used = session.get('usedPercentage')
+        avail = session.get('availableUnits')
+        if (isinstance(used, (int, float)) and used >= 99.5) or (isinstance(avail, (int, float)) and avail <= 0):
+            return True
+    monthly = quota.get('monthly') or {}
+    if isinstance(monthly, dict):
+        used = monthly.get('usedPercentage')
+        avail = monthly.get('availableUnits')
+        if (isinstance(used, (int, float)) and used >= 99.9) or (isinstance(avail, (int, float)) and avail <= 0):
+            return True
+    return False
+
+
+def remaining_score(quota: dict | None) -> float:
+    if not isinstance(quota, dict) or quota.get('status') != 'available':
+        return 50.0
+    session = quota.get('session') or {}
+    if isinstance(session, dict) and isinstance(session.get('usedPercentage'), (int, float)):
+        return max(0.0, min(100.0, 100.0 - float(session['usedPercentage'])))
+    monthly = quota.get('monthly') or {}
+    if isinstance(monthly, dict) and isinstance(monthly.get('usedPercentage'), (int, float)):
+        return max(0.0, min(100.0, 100.0 - float(monthly['usedPercentage'])))
+    return 50.0
+
+
 class Quotas:
     def __init__(self,auth,transport=None):
         self.auth,self.transport,self.cache = auth,transport,{}

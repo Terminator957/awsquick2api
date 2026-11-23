@@ -45,6 +45,12 @@ class AccountPatch(BaseModel):
     max_concurrency: int | None = Field(default=None, ge=1, le=8)
 
 
+class BatchAccountAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["enable", "disable", "clear_cooldown", "refresh_quota"]
+    account_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class NativeLoginRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     provider: Literal['enterprise', 'social'] = 'social'
