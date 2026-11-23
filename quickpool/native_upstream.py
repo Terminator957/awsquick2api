@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -81,12 +82,14 @@ class NativeSession:
 
 
 class Upstream:
-    def __init__(self, store, auth, *, connect=None, transport=None, session_cache=None):
+    def __init__(self, store, auth, *, connect=None, transport=None, session_cache=None,
+                 app_ping_interval: float = 25.0):
         self.store, self.auth = store, auth
         self.connect = connect or websocket_connect
         self.http_transport = transport
         self.outpost_ids = {}
         self.session_cache = session_cache if session_cache is not None else SessionCache()
+        self.app_ping_interval = app_ping_interval
 
     async def session(self, account_id):
         credentials = await self.auth.credentials(account_id)
@@ -398,14 +401,30 @@ class Upstream:
             if len(encoded) > 60_000:
                 raise UpstreamError(400, 'Quick 附件引用消息仍超过安全发送预算；请减少附件数量', retryable=False)
             await socket.send(encoded)
-            deadline = time.monotonic()+300
+            started_at = time.monotonic()
+            deadline = started_at + 300
+            last_recv_at = started_at
+            next_ping_at = started_at + self.app_ping_interval if self.app_ping_interval else float('inf')
             while time.monotonic() < deadline:
-                if session.transport == 'gateway' and time.monotonic() >= refresh_at:
+                now = time.monotonic()
+                if session.transport == 'gateway' and now >= refresh_at:
                     fresh = await self.auth.credentials(account_id, force=True)
                     await socket.send(build_token_refresh(fresh['access_token']))
-                    refresh_at = time.monotonic()+900
+                    refresh_at = now + 900
+                if self.app_ping_interval and now >= next_ping_at:
+                    await send({'type': 'ping', 'payload': {'timestamp': int(time.time() * 1000)}})
+                    next_ping_at = now + self.app_ping_interval
+                recv_budget = min(90 - (now - last_recv_at), deadline - now)
+                if recv_budget <= 0:
+                    raise TimeoutError
+                wait_for_sec = min(recv_budget, max(0.05, next_ping_at - now)) if self.app_ping_interval else recv_budget
                 try:
-                    raw = await asyncio.wait_for(socket.recv(), min(90, max(1, deadline-time.monotonic())))
+                    raw = await asyncio.wait_for(socket.recv(), wait_for_sec)
+                    last_recv_at = time.monotonic()
+                except TimeoutError:
+                    if time.monotonic() - last_recv_at >= 90 or time.monotonic() >= deadline:
+                        raise
+                    continue
                 except ConnectionClosed:
                     decoder.finish()
                     raise UpstreamError(502, 'Quick 原生流在完成事件之前关闭') from None
@@ -425,7 +444,12 @@ class Upstream:
                                                 retryable=False)
                         status = 429 if code in ('ThrottlingException', 'rate_limited') else 502
                         retryable = event.get('retryable', payload.get('retryable'))
-                        raise UpstreamError(status, 'Quick 原生聊天返回错误事件',
+                        safe_code = code if isinstance(code, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', code) else ''
+                        logging.getLogger(__name__).warning(
+                            'quick_error_event transport=%s code=%s retryable=%s emitted=%s elapsed=%.2fs',
+                            session.transport, safe_code or 'unknown', retryable, emitted, time.monotonic() - started_at)
+                        detail = f'Quick 原生聊天返回错误事件 ({safe_code})' if safe_code else 'Quick 原生聊天返回错误事件'
+                        raise UpstreamError(status, detail,
                                             retryable=retryable if isinstance(retryable, bool) else None)
                     update = text.feed(event)
                     if update.delta:
