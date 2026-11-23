@@ -93,13 +93,15 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
     @app.middleware("http")
     async def limits_and_headers(request: Request, call_next):
         # Bound both Content-Length and streamed/chunked request bodies.
-        limit = 5 * 1024 * 1024
+        store = getattr(request.app.state, "store", None)
+        max_body_mb = max(1, min(100, int(store.get_settings().get("max_body_mb", 20)))) if store else 20
+        limit = max_body_mb * 1024 * 1024
         total = 0
         chunks = []
         async for chunk in request.stream():
             total += len(chunk)
             if total > limit:
-                return JSONResponse({"error": {"message": "请求体超过 5 MiB", "type": "invalid_request_error"}}, 413)
+                return JSONResponse({"error": {"message": f"请求体超过 {max_body_mb} MiB", "type": "invalid_request_error"}}, 413)
             chunks.append(chunk)
         request._body = b"".join(chunks)
         response = await call_next(request)
@@ -328,8 +330,14 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         request_id = "chatcmpl-" + uuid.uuid4().hex
         started = time.monotonic()
         created = int(time.time())
+        settings = app.state.store.get_settings()
         try:
-            prepared = Prepared(value)
+            prepared = Prepared(
+                value,
+                max_images=max(1, min(500, int(settings.get("max_images", 50)))),
+                max_messages=max(10, min(10000, int(settings.get("max_messages", 2000)))),
+                max_context_mb=max(1, min(100, int(settings.get("max_body_mb", 20)))),
+            )
         except CompatibilityError as exc:
             return JSONResponse({'error':{'message':str(exc),'type':'invalid_request_error'}},400)
         messages = [{'role':'user','content':prepared.prompt}]

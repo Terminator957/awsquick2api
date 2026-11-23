@@ -37,6 +37,9 @@ class SettingsPatch(BaseModel):
     scheduling_strategy: Literal['weighted', 'quota_first', 'round_robin'] | None = None
     session_cache_ttl: int | None = Field(default=None, ge=60, le=86400)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
+    max_images: int | None = Field(default=None, ge=1, le=500)
+    max_messages: int | None = Field(default=None, ge=10, le=10000)
+    max_body_mb: int | None = Field(default=None, ge=1, le=100)
 
 
 def register_admin_routes(app, admin):

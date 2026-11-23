@@ -64,8 +64,10 @@ def image_data(url):
 
 
 class Prepared:
-    def __init__(self, request):
+    def __init__(self, request, *, max_images: int = 50, max_messages: int = 2000, max_context_mb: int = 20):
         self.request = request
+        if len(request.messages) > max_messages:
+            raise CompatibilityError(f'每次请求最多 {max_messages} 条消息')
         self.images = []
         self.tools = request.tools or ([{'type':'function', 'function':f} for f in request.functions]
                                        if request.functions else [])
@@ -105,8 +107,8 @@ class Prepared:
                         texts.append(f'[图片附件 {len(self.images)}]')
                 item['content'] = '\n'.join(texts)
             messages.append(item)
-        if len(self.images) > 20:
-            raise CompatibilityError('每次请求最多 20 张图片')
+        if len(self.images) > max_images:
+            raise CompatibilityError(f'每次请求最多 {max_images} 张图片')
         if len(messages) == 1 and set(messages[0]) == {'role','content'}:
             self.prompt = messages[0]['content']
         else:
@@ -132,8 +134,8 @@ class Prepared:
             self.prompt += '\n\n' + instructions
         if self.tools:
             self.prompt += '\nDeclared functions: ' + json.dumps(self.tools, ensure_ascii=False)
-        if len(json.dumps(self.context, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) > 5*1024*1024:
-            raise CompatibilityError('转换后的上下文附件超过 5 MiB')
+        if len(json.dumps(self.context, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) > max_context_mb*1024*1024:
+            raise CompatibilityError(f'转换后的上下文附件超过 {max_context_mb} MiB')
 
     def result(self, text):
         message, finish = {'role':'assistant','content':text}, 'stop'

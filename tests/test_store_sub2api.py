@@ -84,7 +84,7 @@ def test_batch_value_bounds():
 
 def test_settings_model_bounds():
     assert SettingsPatch().model_dump() == dict.fromkeys(
-        ("scheduling_strategy", "session_cache_ttl", "max_attempts"))
+        ("scheduling_strategy", "session_cache_ttl", "max_attempts", "max_images", "max_messages", "max_body_mb"))
     for strategy in ("weighted", "quota_first", "round_robin"):
         assert SettingsPatch(scheduling_strategy=strategy).scheduling_strategy == strategy
     with pytest.raises(ValidationError, match="scheduling_strategy"):
@@ -193,7 +193,10 @@ def test_requests_today_uses_utc_midnight_and_key_id(store, monkeypatch):
 
 
 def test_settings_defaults_and_patch(store):
-    defaults = {"scheduling_strategy": "weighted", "session_cache_ttl": 1800, "max_attempts": 3}
+    defaults = {
+        "scheduling_strategy": "weighted", "session_cache_ttl": 1800, "max_attempts": 3,
+        "max_images": 50, "max_messages": 2000, "max_body_mb": 20,
+    }
     assert store.get_settings() == defaults
     updated = store.patch_settings({
         "scheduling_strategy": "quota_first", "session_cache_ttl": 60, "max_attempts": None, "unknown": 1,

@@ -189,7 +189,8 @@ def test_late_request_error_keeps_http_classification_before_headers(gateway, mo
 
 
 def test_request_body_limit_remains_bounded(gateway):
-    client, _, _, key, backend = gateway
+    client, app, _, key, backend = gateway
+    app.state.store.patch_settings({'max_body_mb': 5})
     response=client.post('/v1/messages',headers=key,json={'model':'amazon-smart','max_tokens':1,
         'messages':[{'role':'user','content':'x'*(5*1024*1024)}]})
     assert response.status_code==413

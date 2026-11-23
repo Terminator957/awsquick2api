@@ -81,6 +81,9 @@ class SettingsPatch(BaseModel):
     scheduling_strategy: Literal["weighted", "quota_first", "round_robin"] | None = None
     session_cache_ttl: int | None = Field(default=None, ge=60, le=86400)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
+    max_images: int | None = Field(default=None, ge=1, le=500)
+    max_messages: int | None = Field(default=None, ge=10, le=10000)
+    max_body_mb: int | None = Field(default=None, ge=1, le=100)
 
 
 class NativeLoginRequest(BaseModel):
@@ -144,7 +147,7 @@ def model_options(model: str):
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=128)
-    messages: list[Message] = Field(min_length=1, max_length=500)
+    messages: list[Message] = Field(min_length=1, max_length=10000)
     stream: bool = False
     stream_options: dict[str, Any] | None = None
     reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'off'] | None = None

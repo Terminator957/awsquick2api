@@ -80,6 +80,9 @@
               <label>调度策略<select class="filter-select" id="scheduling-strategy"><option value="weighted">加权最少连接</option><option value="quota_first">剩余额度优先</option><option value="round_robin">轮询</option></select></label>
               <label>会话缓存时长（秒）<input type="number" id="session-cache-ttl" min="60" max="86400" required></label>
               <label>最大尝试次数<input type="number" id="max-attempts" min="1" max="5" required></label>
+              <label>单次最多图片数<input type="number" id="max-images" min="1" max="500" required></label>
+              <label>单次最多消息数<input type="number" id="max-messages" min="10" max="10000" required></label>
+              <label>请求体上限（MiB）<input type="number" id="max-body-mb" min="1" max="100" required></label>
             </div>
           </form>
         </section>

@@ -22,7 +22,14 @@ _API_KEY_SELECT = """
            (SELECT COUNT(*) FROM requests WHERE api_key_id=k.id AND created_at>=?) AS requests_today
     FROM api_keys k
 """
-_SETTINGS_DEFAULTS = {"scheduling_strategy": "weighted", "session_cache_ttl": 1800, "max_attempts": 3}
+_SETTINGS_DEFAULTS = {
+    "scheduling_strategy": "weighted",
+    "session_cache_ttl": 1800,
+    "max_attempts": 3,
+    "max_images": 50,
+    "max_messages": 2000,
+    "max_body_mb": 20,
+}
 
 
 class Store:
