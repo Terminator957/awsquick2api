@@ -10,6 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from .models import UserCreate, UserPatch
 from .native_upstream import UpstreamError
 
 
@@ -20,6 +21,7 @@ class APIKeyCreate(BaseModel):
     group_name: str = Field(default='', max_length=100)
     daily_limit: int = Field(default=0, ge=0)
     expires_at: float | None = None
+    user_id: str = Field(default='', max_length=64)
 
 
 class APIKeyPatch(BaseModel):
@@ -30,6 +32,7 @@ class APIKeyPatch(BaseModel):
     enabled: bool | None = None
     daily_limit: int | None = None
     expires_at: float | None = None
+    user_id: str | None = Field(default=None, max_length=64)
 
 
 class SettingsPatch(BaseModel):
@@ -45,6 +48,26 @@ class SettingsPatch(BaseModel):
 
 def register_admin_routes(app, admin):
     router = APIRouter(prefix='/api', dependencies=[Depends(admin)])
+
+    @router.get('/users')
+    async def list_users():
+        return {'users': app.state.store.list_users()}
+
+    @router.post('/users', status_code=201)
+    async def create_user(body: UserCreate):
+        return app.state.store.create_user(body)
+
+    @router.patch('/users/{user_id}')
+    async def update_user(user_id: str, body: UserPatch):
+        user = app.state.store.patch_user(user_id, body.model_dump(exclude_none=True))
+        if user is None:
+            raise HTTPException(404, '用户不存在')
+        return user
+
+    @router.delete('/users/{user_id}', status_code=204)
+    async def delete_user(user_id: str):
+        if not app.state.store.delete_user(user_id):
+            raise HTTPException(404, '用户不存在')
 
     @router.get('/keys')
     async def list_keys():

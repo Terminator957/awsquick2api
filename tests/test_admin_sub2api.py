@@ -136,7 +136,7 @@ def test_api_key_crud(admin_gateway, monkeypatch):
 
     path = '/api/keys'
     response = client.post(path, headers=admin, json={'name': 'Build'})
-    key = dict(id='k1', name='Build', notes='', group_name='', daily_limit=0, expires_at=None, enabled=True)
+    key = dict(id='k1', name='Build', notes='', group_name='', daily_limit=0, expires_at=None, enabled=True, user_id='')
     assert response.status_code == 201 and response.json() == dict(key, plaintext_key='sk-test')
     assert client.get(path, headers=admin).json() == {'keys': [key]}
     response = client.patch(path + '/k1', headers=admin, json={'enabled': False, 'name': None, 'daily_limit': 15})

@@ -460,7 +460,7 @@ async def message_stream(result, request, tools, input_tokens):
 def register_cli_routes(app, complete, api_access):
     async def handle(request, protocol, count=False):
         try:
-            api_access(request)
+            await api_access(request)
             body = await request.json()
             if count and isinstance(body, dict):
                 body = {**body, 'max_tokens': body.get('max_tokens', 1), 'stream': False}
