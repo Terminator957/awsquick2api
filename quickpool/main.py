@@ -18,8 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .admin_api import handle_batch_action, register_admin_routes
-from .api_keys import KeyAuthError, verify_managed_key
-from .cli_api import register_cli_routes
+from .api_keys import KeyAuthError, resolve_user_policy, verify_managed_key
+from .cli_api import estimate_tokens, register_cli_routes
 from .compat import CompatibilityError, Prepared
 from .models import (
     DEFAULT_MODEL,
@@ -34,7 +34,7 @@ from .models import (
 from .native_auth import AuthError, NativeAuth
 from .native_upstream import Upstream, UpstreamError
 from .pool import Pool, PoolUnavailable
-from .quota import Quotas, is_quota_exhausted
+from .quota import Quotas, is_quota_exhausted, summarize_pool_quota
 from .store import Store
 from .transfer import TransferError, export_accounts, import_accounts
 
@@ -125,15 +125,15 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         if not hmac.compare_digest(token.encode(), request.app.state.store.admin_key.encode()):
             raise HTTPException(401, "管理密钥无效")
 
-    current_key_ctx: ContextVar[tuple[str, str]] = ContextVar("quickpool_api_key", default=("", ""))
+    current_key_ctx: ContextVar[dict] = ContextVar("quickpool_api_key", default={})
 
-    def api_access(request: Request):
+    async def api_access(request: Request):
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
         if request.url.path in ('/messages', '/v1/messages', '/messages/count_tokens', '/v1/messages/count_tokens'):
             token = token or request.headers.get('x-api-key', '')
         store = request.app.state.store
         if hmac.compare_digest(token.encode(), store.api_key.encode()):
-            current_key_ctx.set(("", ""))
+            current_key_ctx.set({})
             return
         try:
             managed = verify_managed_key(store, token)
@@ -142,7 +142,11 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         if managed is None:
             raise HTTPException(401, "API 密钥无效")
         store.record_api_key_use(managed["id"])
-        current_key_ctx.set((managed["id"], managed.get("group_name") or ""))
+        current_key_ctx.set({'api_key_id': managed['id'], 'user_id': managed.get('user_id', ''),
+                             'group_name': managed.get('effective_group_name', ''),
+                             'allowed_models': managed.get('allowed_models', []),
+                             'max_thinking_effort': managed.get('max_thinking_effort', ''),
+                             'smart_default_effort': managed.get('smart_default_effort', '')})
 
     def get_account(account_id):
         account = app.state.store.account(account_id)
@@ -162,10 +166,14 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             quota = app.state.quotas.cached(account['id'])
             account['quota'] = quota
             account['quota_exhausted'] = is_quota_exhausted(quota)
+        quota_summary = summarize_pool_quota(accounts, app.state.store)
+        for account in accounts:
+            account['token_stats'] = quota_summary['account_tokens'].get(account['id'])
         cache = getattr(app.state.upstream, 'session_cache', None)
         cache_stats = cache.stats() if cache is not None else {
             "hits": 0, "misses": 0, "hit_rate": 0.0, "active_sessions": 0}
         return {"accounts": accounts, "stats": app.state.store.stats(), "cache_stats": cache_stats,
+                "pool_quota": quota_summary['pool_quota'],
                 "version": __version__, "auth_mode": "desktop-oauth"}
 
     @app.get("/api/accounts/{account_id}/detail", dependencies=[Depends(admin)])
@@ -331,6 +339,16 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         started = time.monotonic()
         created = int(time.time())
         settings = app.state.store.get_settings()
+        policy = current_key_ctx.get()
+        api_key_id = policy.get('api_key_id', '')
+        user_id = policy.get('user_id', '')
+        key_group = policy.get('group_name', '')
+        try:
+            effective_effort = resolve_user_policy(
+                value.model, value.mode, value.effort, value.has_explicit_effort,
+                settings.get('smart_default_effort', 'high'), policy)
+        except KeyAuthError as exc:
+            return JSONResponse({'error': {'message': exc.message, 'type': 'permission_error'}}, exc.status)
         try:
             prepared = Prepared(
                 value,
@@ -340,16 +358,13 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             )
         except CompatibilityError as exc:
             return JSONResponse({'error':{'message':str(exc),'type':'invalid_request_error'}},400)
+        input_tokens = estimate_tokens(prepared.context if prepared.context is not None else prepared.prompt)
         messages = [{'role':'user','content':prepared.prompt}]
         tried = set()
         last_error = None
         account = None
         iterator = None
         first = ""
-        api_key_id, key_group = current_key_ctx.get()
-        effective_effort = value.effort
-        if value.mode == "smart" and not value.has_explicit_effort:
-            effective_effort = settings.get("smart_default_effort", "high")
         cache = getattr(app.state.upstream, 'session_cache', None)
         matched_entry, delta_offset = None, 0
         if cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
@@ -389,7 +404,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 app.state.store.log(uuid.uuid4().hex, account["id"], exc.status,
                                     round((time.monotonic() - started) * 1000), 0, str(exc),
                                     model=value.model, session_hit=bool(stream_state.get('reused')),
-                                    api_key_id=api_key_id)
+                                    api_key_id=api_key_id, input_tokens=input_tokens,
+                                    output_tokens=0, user_id=user_id)
                 if not exc.retryable:
                     break
             except BaseException:
@@ -443,7 +459,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 app.state.store.log(request_id, account["id"], status,
                                     round((time.monotonic() - started) * 1000), chars, error,
                                     model=value.model, session_hit=session_reused,
-                                    api_key_id=api_key_id)
+                                    api_key_id=api_key_id, input_tokens=input_tokens,
+                                    output_tokens=(chars + 3) // 4 if chars else 0, user_id=user_id)
 
         def chunk(delta, finish=None):
             return {"id": request_id, "object": "chat.completion.chunk", "created": created,
