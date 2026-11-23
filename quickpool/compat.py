@@ -105,8 +105,8 @@ class Prepared:
                         texts.append(f'[图片附件 {len(self.images)}]')
                 item['content'] = '\n'.join(texts)
             messages.append(item)
-        if len(self.images) > 4:
-            raise CompatibilityError('每次请求最多 4 张图片')
+        if len(self.images) > 20:
+            raise CompatibilityError('每次请求最多 20 张图片')
         if len(messages) == 1 and set(messages[0]) == {'role','content'}:
             self.prompt = messages[0]['content']
         else:

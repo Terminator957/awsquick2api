@@ -144,7 +144,7 @@ def model_options(model: str):
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     model: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=128)
-    messages: list[Message] = Field(min_length=1, max_length=100)
+    messages: list[Message] = Field(min_length=1, max_length=500)
     stream: bool = False
     stream_options: dict[str, Any] | None = None
     reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'off'] | None = None
