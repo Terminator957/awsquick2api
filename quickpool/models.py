@@ -26,6 +26,8 @@ class AccountCreate(BaseModel):
     login_url: str = DEFAULT_LOGIN_URL
     weight: int = Field(default=1, ge=1, le=100)
     max_concurrency: int = Field(default=1, ge=1, le=8)
+    group_name: str = Field(default="", max_length=40)
+    notes: str = Field(default="", max_length=300)
 
     @field_validator("login_url")
     @classmethod
@@ -43,12 +45,42 @@ class AccountPatch(BaseModel):
     enabled: bool | None = None
     weight: int | None = Field(default=None, ge=1, le=100)
     max_concurrency: int | None = Field(default=None, ge=1, le=8)
+    group_name: str | None = Field(default=None, max_length=40)
+    notes: str | None = Field(default=None, max_length=300)
 
 
 class BatchAccountAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: Literal["enable", "disable", "clear_cooldown", "refresh_quota"]
+    action: Literal["enable", "disable", "clear_cooldown", "refresh_quota", "test",
+                    "set_weight", "set_concurrency"]
     account_ids: list[str] = Field(min_length=1, max_length=100)
+    value: int | None = Field(default=None, ge=1, le=100)
+
+
+class ApiKeyCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    notes: str = Field(default="", max_length=300)
+    group_name: str = Field(default="", max_length=40)
+    daily_limit: int = Field(default=0, ge=0, le=1000000)
+    expires_at: float | None = None
+
+
+class ApiKeyPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    notes: str | None = Field(default=None, max_length=300)
+    group_name: str | None = Field(default=None, max_length=40)
+    enabled: bool | None = None
+    daily_limit: int | None = Field(default=None, ge=0, le=1000000)
+    expires_at: float | None = None
+
+
+class SettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scheduling_strategy: Literal["weighted", "quota_first", "round_robin"] | None = None
+    session_cache_ttl: int | None = Field(default=None, ge=60, le=86400)
+    max_attempts: int | None = Field(default=None, ge=1, le=5)
 
 
 class NativeLoginRequest(BaseModel):
