@@ -31,18 +31,46 @@
             <article class="metric"><div class="metric-label">近 24 小时请求 <span>↗</span></div><div class="metric-number" id="stat-requests">0</div><div class="metric-foot">包含转发尝试与连通性测试</div></article>
             <article class="metric"><div class="metric-label">请求成功率 <span>↗</span></div><div class="metric-number"><span id="stat-rate">—</span><small id="rate-unit"></small></div><div class="metric-foot" id="stat-success-note">等待第一条请求</div></article>
             <article class="metric"><div class="metric-label">平均响应耗时 <span>↗</span></div><div class="metric-number"><span id="stat-latency">—</span><small>s</small></div><div class="metric-foot">成功请求的完整响应时间</div></article>
+            <article class="metric"><div class="metric-label">会话复用缓存 <span>↗</span></div><div class="metric-number"><span id="stat-cache-rate">0</span><small>%</small></div><div class="metric-foot" id="stat-cache-note">命中 0 次 · 活跃会话 0 个</div></article>
           </div>
           <div class="endpoint-strip"><div class="endpoint-icon">⌘</div><div class="endpoint-info"><span>你的统一 API 入口</span><code id="endpoint-label"></code></div><span class="protocol-badge">OpenAI compatible</span><button class="button compact" id="copy-endpoint">复制地址 <span>⧉</span></button></div>
-          <div class="section-heading"><div><h2>账号池 <span class="pill" id="pool-count">0 个账号</span></h2><p>独立会话 · 加权调度 · 异常冷却</p></div><button class="text-button" data-goto="accounts">管理全部账号 ↗</button></div>
+          <div class="section-heading"><div><h2>账号池 <span class="pill" id="pool-count">0 个账号</span></h2><p>独立会话 · 加权调度 · 异常冷却</p></div><div class="pool-actions">
+            <button class="button compact" data-action="refresh_quota" data-batch="all">全部刷新额度</button>
+            <button class="button compact" data-action="clear_cooldown" data-batch="cooldown">一键解冻冷却</button>
+            <button class="text-button" data-goto="accounts">管理全部账号 ↗</button>
+          </div></div>
           <div id="overview-accounts"></div>
           <div class="bottom-grid"><article class="panel getting-started"><div class="panel-kicker">GET CONNECTED <span>01 — 03</span></div><h2>三步，连接你的 Quick。</h2><ol><li><span>01</span><div><strong>添加账号</strong><p>为每个 Quick 身份建立独立的账号记录。</p></div></li><li><span>02</span><div><strong>使用原生授权</strong><p>选择账号类型，在自己的 Edge 中完成 PKCE 授权。</p></div></li><li><span>03</span><div><strong>测试通过，开始代理</strong><p>验证实际转发后，复制 Base URL 和 API Key 接入客户端。</p></div></li></ol></article><article class="panel route-panel"><div class="panel-kicker">REQUEST ROUTING <span class="live-label"><i></i> 实时状态</span></div><div class="route"><div><span class="route-node">⌘</span><strong>你的客户端</strong><small>OpenAI 协议</small></div><span class="route-line">→</span><div><span class="route-node gateway">q↗</span><strong>QuickPool</strong><small>加权最少连接</small></div><span class="route-line">→</span><div><span class="route-node">▤</span><strong>Quick 账号池</strong><small id="route-ready">0 个可用会话</small></div></div><div class="route-caption"><i class="status-dot orange"></i><span>仅在输出开始前重试，避免流式回复重复。</span></div></article></div>
         </section>
 
-        <section data-section="accounts" hidden aria-label="账号池"><div class="filter-bar"><label class="search-field"><span>⌕</span><input id="account-search" type="search" placeholder="搜索账号名称或 AWS 账号 ID" aria-label="搜索账号"></label><div class="filter-info" id="account-summary">0 个账号</div><button class="button compact" id="export-accounts">加密导出</button><button class="button compact" id="import-accounts">导入账号</button></div><div id="all-accounts"></div><div class="notice">每个账号独立保存原生授权令牌，服务会自动刷新。授权完成后仍需实际测试；需要重新登录的账号会暂停参与调度。</div></section>
+        <section data-section="accounts" hidden aria-label="账号池"><div class="filter-bar"><label class="search-field"><span>⌕</span><input id="account-search" type="search" placeholder="搜索账号名称或 AWS 账号 ID" aria-label="搜索账号"></label>
+          <select class="filter-select" id="account-status" aria-label="账号状态筛选">
+            <option value="">全部状态</option><option value="ready">可用</option><option value="cooldown">冷却中</option>
+            <option value="exhausted">额度已满</option><option value="disabled">已停用</option><option value="auth">待授权或失效</option>
+          </select>
+          <select class="filter-select" id="account-sort" aria-label="账号排序">
+            <option value="">默认顺序</option><option value="session">会话剩余额度高→低</option><option value="monthly">月度剩余额度高→低</option>
+            <option value="success">成功率高→低</option><option value="recent">最近使用</option>
+          </select>
+          <div class="filter-info" id="account-summary">0 个账号</div><button class="button compact" id="export-accounts">加密导出</button><button class="button compact" id="import-accounts">导入账号</button></div>
+          <div class="batch-bar" id="batch-bar" hidden>
+            <strong id="batch-count" aria-live="polite"></strong>
+            <button class="button compact" data-action="enable" data-batch="selected">批量启用</button>
+            <button class="button compact" data-action="disable" data-batch="selected">批量停用</button>
+            <button class="button compact" data-action="refresh_quota" data-batch="selected">批量刷额度</button>
+            <button class="button compact" data-action="clear_cooldown" data-batch="selected">批量解冻</button>
+            <button class="text-button" id="clear-selection">取消选择</button>
+          </div>
+          <div id="all-accounts"></div><div class="notice">每个账号独立保存原生授权令牌，服务会自动刷新。授权完成后仍需实际测试；需要重新登录的账号会暂停参与调度。</div></section>
 
         <section data-section="connect" hidden aria-label="API 接入"><div class="connect-grid"><article class="panel config-panel"><div class="panel-kicker">CONNECTION DETAILS</div><h2>接入配置</h2><label>Base URL</label><div class="copy-field"><code id="config-url"></code><button class="icon-button" id="copy-config-url" aria-label="复制 Base URL">⧉</button></div><label>API Key <span>仅用于客户端，独立于管理密钥</span></label><div class="copy-field"><code id="config-key">••••••••••••••••••••••••</code><button class="icon-button" id="reveal-key" aria-label="显示 API Key">◉</button><button class="icon-button" id="copy-key" aria-label="复制 API Key">⧉</button></div><label>模型名称</label><div class="copy-field model-names"><code>amazon-fast / amazon-balanced / amazon-smart<br>后缀：-low / -medium / -high</code></div><div class="notice">不带后缀关闭思考。Quick 的 fast 模式在官方客户端会关闭思考；其深度后缀按请求透传，是否生效由服务决定。工具与 JSON 输出使用提示词适配并缓冲验证，不是原生函数直传。</div></article><article class="panel code-panel"><div class="code-heading"><h2>发送第一条请求</h2><button class="text-button" id="copy-example">复制代码 ⧉</button></div><div class="code-tabs"><button class="active" data-code="python">Python</button><button data-code="curl">cURL</button></div><pre><code id="code-example"></code></pre></article></div><article class="panel playground"><div class="code-heading"><div><div class="panel-kicker">LIVE PLAYGROUND</div><h2>测试你的账号池</h2></div><span class="pill">实际调用上游</span></div><form id="playground-form"><label for="playground-model">模型与思考深度</label><select id="playground-model" class="model-select"><option>amazon-fast</option></select><label class="sr-only" for="playground-input">测试消息</label><textarea id="playground-input" placeholder="输入一条消息，验证完整的代理链路…" rows="3" required maxlength="120000"></textarea><div class="playground-actions"><span id="playground-status">请先确保至少有一个可用账号</span><button class="button primary" id="playground-send" type="submit">发送请求 ↗</button></div></form><pre id="playground-output" hidden aria-live="polite"></pre></article></section>
 
-        <section data-section="logs" hidden aria-label="请求日志"><div class="section-heading"><div><h2>最近请求</h2><p>最多保留 10,000 条记录，此处展示最近 100 条。不会记录消息正文或凭据。</p></div><span class="pill" id="log-count">0 条</span></div><div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>账号</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="logs-body"></tbody></table><div id="logs-empty" class="empty compact-empty"><span class="empty-symbol">≡</span><h3>还没有请求记录</h3><p>账号测试和代理调用会在这里留下记录。</p></div></div></section>
+        <section data-section="logs" hidden aria-label="请求日志"><div class="section-heading"><div><h2>最近请求</h2><p>最多保留 10,000 条记录，此处展示最近 100 条。不会记录消息正文或凭据。</p></div><span class="pill" id="log-count">0 条</span></div>
+          <div class="filter-bar log-filters">
+            <select class="filter-select" id="log-account" aria-label="日志账号筛选"><option value="">全部账号</option></select>
+            <select class="filter-select" id="log-status" aria-label="日志状态筛选"><option value="">全部状态</option><option value="ok">仅成功</option><option value="error">仅失败</option></select>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>账号</th><th>模型 / 缓存</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="logs-body"></tbody></table><div id="logs-empty" class="empty compact-empty"><span class="empty-symbol">≡</span><h3>还没有请求记录</h3><p>账号测试和代理调用会在这里留下记录。</p></div></div></section>
         <footer class="main-footer"><span>QuickPool <span class="accent">/</span> 独立开发的 Amazon Quick 本地代理</span><span class="mono">LOCAL FIRST · SESSION ISOLATED</span></footer>
       </div>
     </main>
@@ -50,6 +78,36 @@
 
   <dialog id="auth-dialog" class="auth-dialog"><form id="auth-form"><span class="brand-icon">q<span>↗</span></span><div class="eyebrow">QUICKPOOL CONSOLE</div><h2>连接你的本地网关</h2><p>输入管理密钥以访问账号池。首次启动后，密钥保存在服务数据目录的 <code>admin.key</code> 中。</p><label for="admin-key">管理密钥</label><input type="password" id="admin-key" autocomplete="current-password" required placeholder="粘贴 admin.key 中的密钥"><p id="auth-error" class="form-error" aria-live="polite"></p><button class="button primary full-width" type="submit">进入管理控制台 ↗</button><div class="auth-footer"><i class="status-dot green"></i> 凭据仅发送至当前本地服务</div></form></dialog>
   <dialog id="account-dialog"><form id="account-form"><div class="dialog-heading"><h2>添加 Quick 账号</h2><button type="button" class="icon-button" data-close="account-dialog" aria-label="关闭">×</button></div><p class="muted">每个账号独立保存原生授权与刷新令牌。</p><label for="account-name">账号名称</label><input id="account-name" placeholder="例如：工作账号" required maxlength="80"><label for="login-url">Quick 工作区地址</label><input id="login-url" type="url" value="https://quick.aws.com/sn" required><div class="form-columns"><div><label for="account-weight">调度权重</label><input id="account-weight" type="number" min="1" max="100" value="1" required></div><div><label for="account-concurrency">最大并发</label><input id="account-concurrency" type="number" min="1" max="8" value="1" required></div></div><p class="form-error" id="account-error" aria-live="polite"></p><div class="dialog-footer"><button type="button" class="button" data-close="account-dialog">取消</button><button class="button primary" type="submit">创建账号 ↗</button></div></form></dialog>
+  <dialog id="detail-dialog" class="wide-dialog" aria-labelledby="detail-title">
+    <div class="dialog-heading"><h2 id="detail-title">账号详情</h2><button type="button" class="icon-button" data-close="detail-dialog" aria-label="关闭">×</button></div>
+    <dl id="detail-meta" class="detail-meta"></dl>
+    <h3>最后报错</h3><pre class="detail-error" id="detail-last-error"></pre>
+    <form id="detail-form">
+      <h3>调度设置</h3>
+      <label for="detail-name">账号名称</label><input id="detail-name" required maxlength="80">
+      <div class="form-columns">
+        <div><label for="detail-weight">调度权重</label><input id="detail-weight" type="number" min="1" max="100" required></div>
+        <div><label for="detail-concurrency">最大并发</label><input id="detail-concurrency" type="number" min="1" max="8" required></div>
+      </div>
+      <div class="detail-save"><button class="button primary" type="submit">保存设置</button></div>
+    </form>
+    <section class="detail-section"><h3>账号额度</h3>
+      <div id="detail-quota" class="form-columns"></div>
+      <div class="pool-actions detail-actions">
+        <button class="button compact" data-action="quota">刷新额度</button><button class="button compact" data-action="test">立即测试</button>
+      </div>
+    </section>
+    <section class="detail-section"><h3>近 24 小时统计</h3><dl id="detail-stats" class="detail-meta"></dl></section>
+    <section class="detail-section"><h3>最近请求</h3>
+      <div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>模型 / 缓存</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="detail-logs"></tbody></table></div>
+    </section>
+    <section class="detail-section"><h3>授权审计事件</h3><ul id="detail-events"></ul></section>
+    <div class="dialog-footer detail-actions">
+      <button class="button compact" data-action="auth-refresh">刷新授权</button>
+      <button class="button compact" data-action="toggle">停用</button>
+      <button class="button compact danger" data-action="delete">删除账号</button>
+    </div>
+  </dialog>
   <dialog id="login-dialog" aria-labelledby="login-title">
     <form id="authorization-form">
       <div class="dialog-heading"><h2 id="login-title">原生账号授权 <small id="login-account-name"></small></h2><button type="button" class="icon-button" data-close="login-dialog" aria-label="关闭">×</button></div>

@@ -3,13 +3,20 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const state = {admin: sessionStorage.getItem('quickpool-admin') || '', config: null, accounts: [], page: 'overview',
   code: 'python', keyVisible: false, refreshing: false, authAccountId: null, authorizationUrl: '',
-  authGeneration: 0, authTimer: null, authStatus: 'none', authStarting: false, quotaRefreshing: false};
+  authGeneration: 0, authTimer: null, authStatus: 'none', authStarting: false, quotaRefreshing: false,
+  selected: new Set(), accountStatus: '', accountSort: '', logAccount: '', logStatus: ''};
 const baseURL = location.origin + '/v1';
 let toastTimer;
 
 function text(selector, value) { $(selector).textContent = String(value); }
 function escapeHTML(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch])); }
-function toast(message) { text('#toast', message); $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4000); }
+function toast(message) {
+  const dialog = $('#detail-dialog');
+  const box = $('#toast');
+  (dialog.open ? dialog : document.body).append(box);
+  box.textContent = message; box.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { box.hidden = true; }, 4000);
+}
 async function copy(value) { try { await navigator.clipboard.writeText(value); toast('已复制'); } catch { toast('剪贴板不可用，请手动复制'); } }
 async function api(path, options = {}) {
   const response = await fetch(path, {...options, headers: {'Authorization': 'Bearer ' + state.admin,
@@ -33,34 +40,110 @@ function changePage(page) {
   text('#breadcrumb', labels[page][0]); text('#page-title', labels[page][1]); text('#page-description', labels[page][2]);
   if (page === 'logs') loadLogs().catch(error => toast(error.message));
 }
-function quotaSummary(quota) {
-  if (quota?.status !== 'available') return `<span class="muted" title="${escapeHTML(quota?.reason || '尚未刷新')}">暂不可用</span>`;
-  const periods = [['monthly','月度'],['session','会话']].filter(([key]) => quota[key]);
-  return periods.map(([key,label]) => {
-    const q = quota[key];
-    const remaining = q.availableUnits !== undefined ? q.availableUnits.toLocaleString() : q.usedPercentage !== undefined ? (Math.max(0,100-q.usedPercentage)).toFixed(1)+'%' : '未知';
-    const total = q.availableUnits !== undefined && q.provisionedUnits !== undefined ? ' / '+q.provisionedUnits.toLocaleString() : '';
-    return `<span class="secondary" title="${escapeHTML('更新：'+new Date(quota.updated_at*1000).toLocaleString()+(q.resetsAt ? '；重置：'+q.resetsAt : ''))}">${label}剩余 ${escapeHTML(remaining+total)}${q.availableUnits !== undefined ? ' 分钟' : ''}</span>`;
-  }).join('');
+const accountLabels = {ready: '可用', unconfigured: '待授权', unverified: '待测试', expired: '授权失效',
+  cooldown: '冷却中', disabled: '已停用', exhausted: '额度已满'};
+function accountStatus(a) {
+  if (!a.enabled) return 'disabled';
+  return a.state === 'ready' && a.quota_exhausted ? 'exhausted' : a.state;
+}
+function statusBadge(account) {
+  const status = accountStatus(account);
+  const title = status === 'exhausted' ? '会话额度已用尽，调度会自动跳过此账号' : account.last_error;
+  return `<span class="status ${escapeHTML(status)}" title="${escapeHTML(title)}">${status === 'ready' ? '<i class="status-dot green"></i>' : ''}${escapeHTML(accountLabels[status] ?? '—')}</span>`;
+}
+function formatTime(epoch) {
+  return epoch ? new Date(epoch * 1000).toLocaleString('zh-CN') : '—';
+}
+function quotaPeriod(account, period, detail) {
+  const q = account.quota?.[period];
+  const session = period === 'session';
+  const label = session ? '会话' : '月度';
+  const full = session && (account.quota_exhausted || q?.usedPercentage >= 95);
+  const percent = q?.usedPercentage;
+  const used = percent == null ? '' : `已用 ${percent}%`;
+  const exhausted = full ? '<strong class="quota-full">会话额度已满</strong>' : '';
+  const progress = percent != null || full
+    ? `<progress class="${full ? 'exhausted' : ''}" max="100" value="${escapeHTML(full && percent == null ? 100 : percent)}" aria-label="${escapeHTML(label)}额度已用"></progress>` : '';
+  const minutes = !session && (q?.availableUnits != null || q?.provisionedUnits != null)
+    ? `剩余 ${q.availableUnits?.toLocaleString() ?? '—'} / ${q.provisionedUnits?.toLocaleString() ?? '—'} 分钟` : '';
+  const resume = session && q?.resumeInMinutes != null && (full || detail) ? `约 ${q.resumeInMinutes} 分钟后恢复` : '';
+  const reset = q?.resetsAt != null ? `重置：${q.resetsAt}` : '';
+  const content = [(session || detail || !minutes) && used, minutes, resume, detail && reset].filter(Boolean).map(s => `<span>${escapeHTML(s)}</span>`).join('');
+  if (!content && !progress && !detail) return '';
+  const updated = account.quota?.updated_at ? '更新：' + formatTime(account.quota.updated_at) : '';
+  return `<div class="quota-period" title="${escapeHTML([updated, reset].filter(Boolean).join('；'))}"><b>${escapeHTML(label)}</b>${exhausted}${progress}${content || (progress ? '' : '<span>—</span>')}</div>`;
+}
+function quotaSummary(account) {
+  return quotaPeriod(account, 'session', false) + quotaPeriod(account, 'monthly', false)
+    || `<span class="muted" title="${escapeHTML(account.quota?.reason)}">暂不可用</span>`;
 }
 function accountTable(accounts, summary = false) {
-  if (!accounts.length) return `<div class="empty"><span class="empty-symbol">▤</span><h3>${state.accounts.length ? '没有匹配的账号' : '账号池，等待你的第一个会话'}</h3><p>${state.accounts.length ? '试试其他名称或 AWS 账号 ID。' : '添加一个 Amazon Quick 账号，完成授权后，<br>即可通过统一 API 发起对话。'}</p>${state.accounts.length ? '' : '<button class="button primary" data-action="add">＋ 添加第一个账号</button>'}</div>`;
-  const labels = {ready: '可用', unconfigured: '待授权', unverified: '待测试', expired: '授权失效', cooldown: '冷却中'};
-  return `<div class="table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th>剩余额度</th><th>并发 / 权重</th><th>成功 / 失败</th><th>操作</th></tr></thead><tbody>${accounts.slice(0, summary ? 5 : 100).map(a => {
-    const status = a.enabled ? a.state : 'disabled';
+  if (!accounts.length) return `<div class="empty"><span class="empty-symbol">▤</span><h3>${state.accounts.length ? '没有匹配的账号' : '账号池，等待你的第一个会话'}</h3><p>${state.accounts.length ? '试试其他搜索词或状态。' : '添加一个 Amazon Quick 账号，完成授权后，<br>即可通过统一 API 发起对话。'}</p>${state.accounts.length ? '' : '<button class="button primary" data-action="add">＋ 添加第一个账号</button>'}</div>`;
+  const checkbox = summary ? '' : '<th class="select-cell"><input type="checkbox" id="select-all-accounts" aria-label="选择当前筛选结果"></th>';
+  return `<div class="table-wrap"><table><thead><tr>${checkbox}<th>账号</th><th>状态</th><th>剩余额度</th><th>并发 / 权重</th><th>成功 / 失败</th><th>操作</th></tr></thead><tbody>${(summary ? accounts.slice(0, 5) : accounts).map(a => {
     let detail = a.aws_account_id || 'AWS Account';
-    const remaining = Math.max(0, Math.ceil(a.cooldown_until - Date.now()/1000));
-    if (status === 'cooldown') detail += ' · ' + remaining + 's 后重试';
+    if (accountStatus(a) === 'cooldown' && a.cooldown_until != null) {
+      const remaining = Math.max(0, Math.ceil(a.cooldown_until - Date.now()/1000));
+      detail += ' · ' + remaining + 's 后重试';
+    }
     const id = escapeHTML(a.id);
-    return `<tr><td class="name-cell"><div class="account-identity"><span class="account-avatar">${escapeHTML(a.name.slice(0,1).toUpperCase())}</span><div>${escapeHTML(a.name)}<span class="secondary mono">${escapeHTML(detail)}</span></div></div></td><td><span class="status ${escapeHTML(status)}" title="${escapeHTML(a.last_error)}">${status === 'ready' ? '<i class="status-dot green"></i>' : ''}${escapeHTML(labels[status] || '已停用')}</span></td><td>${quotaSummary(a.quota)}</td><td class="mono">${escapeHTML(a.inflight)} / ${escapeHTML(a.max_concurrency)}<span class="secondary">权重 ${escapeHTML(a.weight)}</span></td><td class="mono">${escapeHTML(a.successes)} <span class="muted">/ ${escapeHTML(a.failures)}</span></td><td><div class="account-actions"><button data-action="login" data-id="${id}">${a.configured ? '重新授权' : '授权'}</button><button data-action="auth-refresh" data-id="${id}" ${a.configured ? '' : 'disabled'}>刷新授权</button><button data-action="test" data-id="${id}">测试</button><button data-action="quota" data-id="${id}" ${a.configured ? '' : 'disabled'}>刷新额度</button><button data-action="toggle" data-id="${id}">${a.enabled ? '停用' : '启用'}</button><button class="danger" data-action="delete" data-id="${id}">删除</button></div></td></tr>`;
+    const select = summary ? '' : `<td class="select-cell"><input type="checkbox" data-select-account="${id}" aria-label="选择${escapeHTML(a.name)}"></td>`;
+    return `<tr>${select}<td class="name-cell"><div class="account-identity">
+      <span class="account-avatar">${escapeHTML(a.name?.slice(0,1).toUpperCase())}</span>
+      <div><button class="account-name" data-action="detail" data-id="${id}">${escapeHTML(a.name ?? '—')}</button><span class="secondary mono">${escapeHTML(detail)}</span></div>
+      </div></td><td>${statusBadge(a)}</td><td>${quotaSummary(a)}</td>
+      <td class="mono">${escapeHTML(a.inflight)} / ${escapeHTML(a.max_concurrency)}<span class="secondary">权重 ${escapeHTML(a.weight)}</span></td>
+      <td class="mono">${escapeHTML(a.successes)} <span class="muted">/ ${escapeHTML(a.failures)}</span></td>
+      <td><div class="account-actions"><button data-action="detail" data-id="${id}">详情</button><button data-action="login" data-id="${id}">${a.configured ? '重新授权' : '授权'}</button><button data-action="test" data-id="${id}">测试</button></div></td></tr>`;
   }).join('')}</tbody></table></div>`;
+}
+function renderSelection() {
+  const boxes = $$('[data-select-account]');
+  boxes.forEach(box => { box.checked = state.selected.has(box.dataset.selectAccount); });
+  const all = $('#select-all-accounts');
+  if (all) {
+    const checked = boxes.filter(box => box.checked).length;
+    all.checked = checked === boxes.length;
+    all.indeterminate = checked > 0 && !all.checked;
+  }
+  $('#batch-bar').hidden = !state.selected.size;
+  text('#batch-count', '已选 ' + state.selected.size + ' 个');
 }
 function renderAccounts() {
   $('#overview-accounts').innerHTML = accountTable(state.accounts, true);
   const query = $('#account-search').value.trim().toLowerCase();
-  const filtered = state.accounts.filter(a => (a.name + a.aws_account_id).toLowerCase().includes(query));
+  const filtered = state.accounts.filter(a => {
+    const status = accountStatus(a);
+    const group = ['unconfigured', 'expired'].includes(status) ? 'auth' : status;
+    return (!state.accountStatus || state.accountStatus === group)
+      && [a.name, a.aws_account_id].join(' ').toLowerCase().includes(query);
+  });
+  const sortValue = {
+    session: a => a.quota?.session?.usedPercentage == null ? null : 100 - a.quota.session.usedPercentage,
+    monthly: a => a.quota?.monthly?.availableUnits,
+    success: a => a.successes + a.failures > 0 ? a.successes / (a.successes + a.failures) : 0,
+    recent: a => a.last_used,
+  }[state.accountSort];
+  if (sortValue) filtered.sort((a, b) => (sortValue(b) ?? -Infinity) - (sortValue(a) ?? -Infinity));
   $('#all-accounts').innerHTML = accountTable(filtered);
   text('#account-summary', filtered.length + ' / ' + state.accounts.length + ' 个账号');
+  const cooldown = state.accounts.some(a => accountStatus(a) === 'cooldown');
+  $('[data-batch="cooldown"]').classList.toggle('primary', cooldown);
+  $('[data-batch="cooldown"]').disabled = !cooldown;
+  $('[data-batch="all"]').disabled = !state.accounts.length;
+  renderSelection();
+}
+function renderLogAccounts() {
+  const select = $('#log-account');
+  select.innerHTML = '<option value="">全部账号</option>' + state.accounts.map(a =>
+    `<option value="${escapeHTML(a.id)}">${escapeHTML(a.name)}</option>`).join('');
+  if (!state.accounts.some(a => a.id === state.logAccount)) state.logAccount = '';
+  select.value = state.logAccount;
+}
+async function batch(action, ids) {
+  const result = await api('/api/accounts/batch', {method: 'POST', body: JSON.stringify({action, account_ids: ids})});
+  toast('批量操作完成 · ' + result.affected + ' 个账号');
+  await refresh();
 }
 async function refresh() {
   if (!state.admin || state.refreshing) return;
@@ -68,7 +151,9 @@ async function refresh() {
   try {
     const result = await api('/api/overview');
     state.accounts = result.accounts;
-    const ready = result.accounts.filter(a => a.enabled && a.state === 'ready').length;
+    const ids = new Set(state.accounts.map(a => a.id));
+    for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
+    const ready = state.accounts.filter(a => accountStatus(a) === 'ready').length;
     text('#stat-ready', ready); text('#stat-total', result.accounts.length); text('#nav-count', result.accounts.length);
     text('#pool-count', result.accounts.length + ' 个账号'); text('#route-ready', ready + ' 个可用会话');
     text('#stat-account-note', result.accounts.length ? ready + ' 个就绪 · ' + (result.accounts.length - ready) + ' 个未就绪' : '尚未添加账号');
@@ -77,9 +162,13 @@ async function refresh() {
     text('#rate-unit', result.stats.total ? '%' : '');
     text('#stat-success-note', result.stats.total ? result.stats.success + ' 条成功 / ' + result.stats.total + ' 条尝试' : '等待第一条请求');
     text('#stat-latency', result.stats.success ? (result.stats.avg_ms/1000).toFixed(2) : '—');
+    const cache = result.cache_stats;
+    text('#stat-cache-rate', (100 * (cache?.hit_rate ?? 0)).toFixed(1).replace(/\.0$/, ''));
+    text('#stat-cache-note', '命中 ' + (cache?.hits ?? 0) + ' 次 · 活跃会话 ' + (cache?.active_sessions ?? 0) + ' 个');
     text('#version', 'v' + result.version); text('#connection-label', '服务已连接');
     $('#connection-dot').classList.add('green'); $('#connection-dot').style.removeProperty('background');
     renderAccounts();
+    renderLogAccounts();
     if (!state.quotaRefreshing && state.accounts.some(a => a.configured && (!a.quota?.updated_at || Date.now()/1000-a.quota.updated_at>300))) {
       refreshQuotaCache();
     }
@@ -115,11 +204,56 @@ function renderCode() {
     curl: `curl ${baseURL}/chat/completions \\\n  -H "Authorization: Bearer YOUR_QUICKPOOL_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "amazon-fast",\n    "messages": [{\n      "role": "user",\n      "content": "你好"\n    }],\n    "stream": true\n  }'`};
   text('#code-example', examples[state.code]);
 }
+function logRows(requests, showAccount) {
+  return requests.map(log => `<tr><td class="mono" title="${escapeHTML(log.id)}">${escapeHTML(log.id?.slice(0,18))}${log.id?.length > 18 ? '…' : ''}<span class="secondary">${escapeHTML(formatTime(log.created_at))}</span></td>
+    ${showAccount ? `<td>${escapeHTML(log.account_name ?? '已删除账号')}</td>` : ''}
+    <td>${escapeHTML(log.model ?? '—')}${log.session_hit ? ' <span class="status ready">复用</span>' : ''}</td>
+    <td><span class="status ${log.status === 200 ? 'ready' : 'expired'}">${escapeHTML(log.status ?? '—')}</span></td>
+    <td class="mono">${escapeHTML(log.duration_ms == null ? '—' : (log.duration_ms / 1000).toFixed(2) + 's')}</td>
+    <td class="mono">${escapeHTML(log.output_chars ?? '—')}</td><td>${escapeHTML(log.error || '完成')}</td></tr>`).join('');
+}
 async function loadLogs() {
-  const result = await api('/api/logs');
+  const {logAccount, logStatus} = state;
+  const params = new URLSearchParams({account_id: logAccount, status: logStatus, limit: 100});
+  const result = await api('/api/logs?' + params);
+  if (logAccount !== state.logAccount || logStatus !== state.logStatus) return;
   text('#log-count', result.requests.length + ' 条');
   $('#logs-empty').hidden = result.requests.length > 0;
-  $('#logs-body').innerHTML = result.requests.map(log => `<tr><td class="mono" title="${escapeHTML(log.id)}">${escapeHTML(log.id.slice(0,18))}…<span class="secondary">${escapeHTML(new Date(log.created_at * 1000).toLocaleString('zh-CN'))}</span></td><td>${escapeHTML(log.account_name || '已删除账号')}</td><td><span class="status ${log.status === 200 ? 'ready' : 'expired'}">${escapeHTML(log.status)}</span></td><td class="mono">${escapeHTML((log.duration_ms/1000).toFixed(2))}s</td><td class="mono">${escapeHTML(log.output_chars)}</td><td>${escapeHTML(log.error || '完成')}</td></tr>`).join('');
+  $('#logs-body').innerHTML = logRows(result.requests, true);
+}
+
+async function openDetail(id, action) {
+  const {account, stats, recent_logs, auth_events} = await api(`/api/accounts/${encodeURIComponent(id)}/detail`);
+  const dialog = $('#detail-dialog');
+  if (action !== 'detail' && (!dialog.open || dialog.dataset.id !== id)) return;
+  dialog.dataset.id = id;
+  text('#detail-title', account.name ?? '账号详情');
+  const fields = [
+    ['Provider', account.auth_provider], ['AWS Account ID', account.aws_account_id],
+    ['Token 到期', formatTime(account.token_expires_at)], ['Refresh Token', account.has_refresh_token == null ? null : account.has_refresh_token ? '已保存' : '无'],
+    ['最近使用', formatTime(account.last_used)],
+  ];
+  $('#detail-meta').innerHTML = '<div><dt>状态</dt><dd>' + statusBadge(account) + '</dd></div>' + fields.map(([label, value]) =>
+    `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? '—')}</dd></div>`).join('');
+  text('#detail-last-error', account.last_error || '—');
+  if (action === 'detail' || action === 'save-detail') {
+    $('#detail-name').value = account.name ?? '';
+    $('#detail-weight').value = account.weight ?? '';
+    $('#detail-concurrency').value = account.max_concurrency ?? '';
+  }
+  $('#detail-quota').innerHTML = quotaPeriod(account, 'monthly', true) + quotaPeriod(account, 'session', true);
+  $('#detail-dialog [data-action="quota"]').disabled = !account.configured;
+  $('#detail-dialog [data-action="auth-refresh"]').disabled = !account.configured;
+  text('#detail-dialog [data-action="toggle"]', account.enabled ? '停用' : '启用');
+  const metrics = [['请求', stats?.total], ['成功', stats?.success],
+    ['平均耗时', stats?.avg_ms == null ? null : (stats.avg_ms / 1000).toFixed(2) + 's'], ['会话复用', stats?.session_hits]];
+  $('#detail-stats').innerHTML = metrics.map(([label, value]) =>
+    `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? '—')}</dd></div>`).join('');
+  $('#detail-logs').innerHTML = recent_logs?.length ? logRows(recent_logs, false) : '<tr><td colspan="6" class="muted">暂无请求</td></tr>';
+  $('#detail-events').innerHTML = auth_events?.length ? auth_events.map(event => `<li><time>${escapeHTML(formatTime(event.created_at))}</time>
+    <strong>${escapeHTML(event.event)}</strong><pre>${escapeHTML(event.details && typeof event.details === 'object' ? JSON.stringify(event.details, null, 2) : event.details)}</pre></li>`).join('')
+    : '<li class="muted">暂无授权事件</li>';
+  if (!dialog.open) dialog.showModal();
 }
 
 function stopAuthPolling() {
@@ -198,11 +332,24 @@ function openAuthorization(account) {
 }
 async function accountAction(action, id, button) {
   if (action === 'add') { $('#account-dialog').showModal(); $('#account-name').focus(); return; }
-  const account = state.accounts.find(a => a.id === id);
-  if (!account) return;
+  const dialog = $('#detail-dialog');
   button.disabled = true;
   try {
-    if (action === 'login') {
+    const scope = button.dataset.batch;
+    if (scope) {
+      const ids = scope === 'selected' ? [...state.selected]
+        : state.accounts.filter(a => scope === 'all' || accountStatus(a) === 'cooldown').map(a => a.id);
+      await batch(action, ids); return;
+    }
+    const account = state.accounts.find(a => a.id === id);
+    if (!account) return;
+    if (action === 'detail') {
+      await openDetail(id, action); return;
+    } else if (action === 'save-detail') {
+      await api(`/api/accounts/${encodeURIComponent(id)}`, {method: 'PATCH', body: JSON.stringify({name: $('#detail-name').value.trim(),
+        weight: Number($('#detail-weight').value), max_concurrency: Number($('#detail-concurrency').value)})});
+      toast('账号设置已保存');
+    } else if (action === 'login') {
       openAuthorization(account); return;
     } else if (action === 'auth-refresh') {
       await api(`/api/accounts/${encodeURIComponent(id)}/auth/refresh`, {method: 'POST'});
@@ -215,20 +362,23 @@ async function accountAction(action, id, button) {
       toast(account.enabled ? '账号已停用' : '账号已启用');
     } else if (action === 'delete') {
       if (!confirm(`删除「${account.name}」？将删除该账号保存在本地的授权令牌。`)) return;
-      await api(`/api/accounts/${encodeURIComponent(id)}`, {method: 'DELETE'}); toast('账号已删除');
+      await api(`/api/accounts/${encodeURIComponent(id)}`, {method: 'DELETE'});
+      if (dialog.open && dialog.dataset.id === id) dialog.close();
+      toast('账号已删除');
     } else if (action === 'test') {
       toast('正在向 Quick 发送实际测试请求…');
       const result = await api(`/api/accounts/${encodeURIComponent(id)}/test`, {method: 'POST'});
       toast('测试通过 · ' + (result.duration_ms/1000).toFixed(2) + 's');
     }
     await refresh();
+    if (dialog.open && dialog.dataset.id === id) await openDetail(id, action);
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
 }
 
 document.addEventListener('click', event => {
   const action = event.target.closest('[data-action]');
-  if (action) { accountAction(action.dataset.action, action.dataset.id, action); return; }
+  if (action) { accountAction(action.dataset.action, action.dataset.id ?? action.closest('#detail-dialog')?.dataset.id, action); return; }
   const close = event.target.closest('[data-close]');
   if (close) { $('#' + close.dataset.close).close(); return; }
   const page = event.target.closest('[data-page], [data-goto]');
@@ -244,10 +394,27 @@ $('#auth-form').addEventListener('submit', async event => {
   } catch (error) { text('#auth-error', error.message); }
   finally { button.disabled = false; }
 });
-$('#logout').addEventListener('click', () => { stopAuthPolling(); if ($('#login-dialog').open) $('#login-dialog').close(); sessionStorage.removeItem('quickpool-admin'); state.admin = ''; state.config = null; state.keyVisible = false; state.accounts = []; renderAccounts(); renderCode(); showAuth(); });
+$('#logout').addEventListener('click', () => { stopAuthPolling(); if ($('#login-dialog').open) $('#login-dialog').close(); sessionStorage.removeItem('quickpool-admin'); state.admin = ''; state.config = null; state.keyVisible = false; state.accounts = []; state.selected.clear(); renderAccounts(); renderLogAccounts(); renderCode(); showAuth(); });
 $('#refresh').addEventListener('click', refresh);
 $('#add-account').addEventListener('click', () => { $('#account-dialog').showModal(); $('#account-name').focus(); });
 $('#account-search').addEventListener('input', renderAccounts);
+$('#account-status').addEventListener('change', event => { state.accountStatus = event.target.value; renderAccounts(); });
+$('#account-sort').addEventListener('change', event => { state.accountSort = event.target.value; renderAccounts(); });
+$('#all-accounts').addEventListener('change', event => {
+  const boxes = event.target.id === 'select-all-accounts' ? $$('[data-select-account]') : [event.target];
+  for (const box of boxes) {
+    if (event.target.checked) state.selected.add(box.dataset.selectAccount);
+    else state.selected.delete(box.dataset.selectAccount);
+  }
+  renderSelection();
+});
+$('#clear-selection').addEventListener('click', () => { state.selected.clear(); renderSelection(); });
+$('#detail-form').addEventListener('submit', event => {
+  event.preventDefault();
+  accountAction('save-detail', $('#detail-dialog').dataset.id, event.submitter);
+});
+$('#log-account').addEventListener('change', event => { state.logAccount = event.target.value; changePage('logs'); });
+$('#log-status').addEventListener('change', event => { state.logStatus = event.target.value; changePage('logs'); });
 $('#account-form').addEventListener('submit', async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; text('#account-error', '');
   try {
