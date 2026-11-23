@@ -307,13 +307,14 @@ async function loadSessions() {
   $('#sessions-empty').hidden = !!sessions.length;
   $('#clear-sessions').disabled = !sessions.length;
 }
-function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_messages = 2000, max_body_mb = 20}) {
+function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_messages = 2000, max_body_mb = 20, smart_default_effort = 'high'}) {
   $('#scheduling-strategy').value = scheduling_strategy;
   $('#session-cache-ttl').value = session_cache_ttl;
   $('#max-attempts').value = max_attempts;
   $('#max-images').value = max_images;
   $('#max-messages').value = max_messages;
   $('#max-body-mb').value = max_body_mb;
+  $('#smart-default-effort').value = smart_default_effort;
   $('#settings-form button').disabled = false;
 }
 async function loadSettings() { renderSettings(await api('/api/settings')); }
@@ -694,7 +695,8 @@ $('#settings-form').addEventListener('submit', async event => {
   const button = event.submitter;
   const settings = {scheduling_strategy: $('#scheduling-strategy').value, session_cache_ttl: Number($('#session-cache-ttl').value),
     max_attempts: Number($('#max-attempts').value), max_images: Number($('#max-images').value),
-    max_messages: Number($('#max-messages').value), max_body_mb: Number($('#max-body-mb').value)};
+    max_messages: Number($('#max-messages').value), max_body_mb: Number($('#max-body-mb').value),
+    smart_default_effort: $('#smart-default-effort').value};
   button.disabled = true;
   try {
     renderSettings(await api('/api/settings', {method: 'PATCH', body: JSON.stringify(settings)}));

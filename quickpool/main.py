@@ -347,17 +347,20 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         iterator = None
         first = ""
         api_key_id, key_group = current_key_ctx.get()
+        effective_effort = value.effort
+        if value.mode == "smart" and not value.has_explicit_effort:
+            effective_effort = settings.get("smart_default_effort", "high")
         cache = getattr(app.state.upstream, 'session_cache', None)
         matched_entry, delta_offset = None, 0
         if cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
             eligible_ids = app.state.pool.eligible_ids(tried, group_name=key_group)
-            match = cache.match(prepared.context, value.mode, value.effort, available_account_ids=eligible_ids)
+            match = cache.match(prepared.context, value.mode, effective_effort, available_account_ids=eligible_ids)
             if match is not None:
                 matched_entry, delta_offset = match
             else:
                 cache.record_miss()
         stream_state: dict = {}
-        max_attempts = max(1, min(5, int(app.state.store.get_settings().get("max_attempts", 3))))
+        max_attempts = max(1, min(5, int(settings.get("max_attempts", 3))))
         for attempt_idx in range(max_attempts):
             preferred = matched_entry.account_id if (attempt_idx == 0 and matched_entry is not None) else None
             try:
@@ -369,7 +372,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             stream_state = {}
             iterator = app.state.upstream.stream(
                 account, messages, agent_mode=value.mode,
-                thinking_effort=value.effort, images=prepared.images,
+                thinking_effort=effective_effort, images=prepared.images,
                 context=prepared.context,
                 reuse_thread_id=matched_entry.thread_id if use_reuse else None,
                 delta_offset=delta_offset if use_reuse else 0,
@@ -434,7 +437,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 await iterator.aclose()
                 await app.state.pool.release(account["id"], status, retry_after, error, penalize=penalize)
                 if status == 200 and cache is not None and session_thread_id and prepared.context:
-                    cache.save(account["id"], session_thread_id, prepared.context, value.mode, value.effort)
+                    cache.save(account["id"], session_thread_id, prepared.context, value.mode, effective_effort)
                 elif status != 200 and cache is not None and session_thread_id:
                     cache.invalidate(session_thread_id)
                 app.state.store.log(request_id, account["id"], status,

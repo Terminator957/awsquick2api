@@ -38,7 +38,8 @@ def test_model_vocabulary_reaches_upstream_unchanged(gateway, protocol, model):
     assert response.json()['model'] == model
     mode, _, effort = model.removeprefix('amazon-').partition('-')
     native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type'] == 'user_message')
-    assert native['agent_mode'] == mode and native['thinking_effort'] == (effort or 'off')
+    default = 'high' if mode == 'smart' else 'off'
+    assert native['agent_mode'] == mode and native['thinking_effort'] == (effort or default)
 
 
 @pytest.mark.parametrize('protocol', ['chat/completions', 'responses', 'messages'])
@@ -55,7 +56,7 @@ def test_claude_model_alias_selects_native_mode(gateway, protocol, model, mode):
     assert response.status_code == 200, response.text
     assert response.json()['model'] == model
     native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type'] == 'user_message')
-    assert native['agent_mode'] == mode and native['thinking_effort'] == 'off'
+    assert native['agent_mode'] == mode and native['thinking_effort'] == ('high' if mode == 'smart' else 'off')
 
 
 @pytest.mark.parametrize('model, mode', [('claude-opus-4-6', 'smart'),

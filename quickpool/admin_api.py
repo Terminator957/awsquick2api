@@ -40,6 +40,7 @@ class SettingsPatch(BaseModel):
     max_images: int | None = Field(default=None, ge=1, le=500)
     max_messages: int | None = Field(default=None, ge=10, le=10000)
     max_body_mb: int | None = Field(default=None, ge=1, le=100)
+    smart_default_effort: Literal['off', 'low', 'medium', 'high'] | None = None
 
 
 def register_admin_routes(app, admin):

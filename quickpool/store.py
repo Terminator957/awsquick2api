@@ -29,6 +29,7 @@ _SETTINGS_DEFAULTS = {
     "max_images": 50,
     "max_messages": 2000,
     "max_body_mb": 20,
+    "smart_default_effort": "high",
 }
 
 

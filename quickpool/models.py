@@ -84,6 +84,7 @@ class SettingsPatch(BaseModel):
     max_images: int | None = Field(default=None, ge=1, le=500)
     max_messages: int | None = Field(default=None, ge=10, le=10000)
     max_body_mb: int | None = Field(default=None, ge=1, le=100)
+    smart_default_effort: Literal["off", "low", "medium", "high"] | None = None
 
 
 class NativeLoginRequest(BaseModel):
@@ -132,6 +133,8 @@ MODEL_IDS = tuple('amazon-' + mode + suffix for mode in NATIVE_MODES
                   for suffix in ('', '-low', '-medium', '-high'))
 MODEL_ALIASES = {mode + suffix: 'amazon-' + mode + suffix
                  for mode in NATIVE_MODES for suffix in ('', '-low', '-medium', '-high')}
+MODEL_ALIASES.update({f'{prefix}{mode}-max': f'amazon-{mode}-high'
+                      for mode in NATIVE_MODES for prefix in ('', 'amazon-')})
 MODEL_ALIASES.update(opus='amazon-smart', sonnet='amazon-balanced', haiku='amazon-fast')
 
 
@@ -150,9 +153,9 @@ class ChatRequest(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=10000)
     stream: bool = False
     stream_options: dict[str, Any] | None = None
-    reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'off'] | None = None
+    reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'max', 'off'] | None = None
     agent_mode: Literal['fast', 'balanced', 'smart'] | None = None
-    thinking_effort: Literal['off', 'low', 'medium', 'high'] | None = None
+    thinking_effort: Literal['off', 'low', 'medium', 'high', 'max'] | None = None
     tools: list[dict[str, Any]] | None = Field(default=None, max_length=64)
     tool_choice: str | dict[str, Any] | None = None
     functions: list[dict[str, Any]] | None = Field(default=None, max_length=64)
@@ -165,9 +168,19 @@ class ChatRequest(BaseModel):
         return self.agent_mode or model_options(self.model)[0]
 
     @property
+    def has_explicit_effort(self) -> bool:
+        return (self.thinking_effort is not None
+                or self.reasoning_effort is not None
+                or model_options(self.model)[1] != 'off')
+
+    @property
     def effort(self):
-        return self.thinking_effort or {'none':'off', 'minimal':'low', 'off':'off'}.get(
-            self.reasoning_effort, self.reasoning_effort or model_options(self.model)[1])
+        if self.thinking_effort is not None:
+            return {'max': 'high'}.get(self.thinking_effort, self.thinking_effort)
+        if self.reasoning_effort is not None:
+            return {'none': 'off', 'minimal': 'low', 'off': 'off', 'max': 'high'}.get(
+                self.reasoning_effort, self.reasoning_effort)
+        return model_options(self.model)[1]
 
     @model_validator(mode="after")
     def supported(self):

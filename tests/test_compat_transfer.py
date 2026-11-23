@@ -26,7 +26,7 @@ def test_each_model_reaches_native_payload(gateway, model):
     native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type']=='user_message')
     parts = model.removeprefix('amazon-').split('-')
     assert native['agent_mode'] == parts[0]
-    assert native['thinking_effort'] == (parts[1] if len(parts)>1 else 'off')
+    assert native['thinking_effort'] == (parts[1] if len(parts)>1 else ('high' if parts[0]=='smart' else 'off'))
 
 
 def test_models_match_upstream_vocabulary_and_default(gateway):
