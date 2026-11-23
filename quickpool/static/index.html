@@ -17,6 +17,7 @@
         <button class="nav-item" data-page="connect"><span class="nav-icon">⌘</span>API 接入</button>
         <button class="nav-item" data-page="logs"><span class="nav-icon">≡</span>请求日志</button>
         <button class="nav-item" data-page="keys"><span class="nav-icon" aria-hidden="true">⚿</span>API 密钥</button>
+        <button class="nav-item" data-page="users"><span class="nav-icon" aria-hidden="true">♙</span>用户管理<span class="count" id="nav-users-count">0</span></button>
       </nav>
       <div class="sidebar-note"><span class="tiny-label">一个入口，多个会话</span><p>把你的 Amazon Quick 账号<br>接入统一的本地 API。</p><span class="note-line"></span><span class="mono">OPENAI COMPATIBLE</span></div>
       <div class="sidebar-bottom"><span class="connection"><i id="connection-dot"></i><span id="connection-label">等待连接</span></span><span class="mono" id="version">v0.1.0</span></div>
@@ -33,6 +34,8 @@
             <article class="metric"><div class="metric-label">请求成功率 <span>↗</span></div><div class="metric-number"><span id="stat-rate">—</span><small id="rate-unit"></small></div><div class="metric-foot" id="stat-success-note">等待第一条请求</div></article>
             <article class="metric"><div class="metric-label">平均响应耗时 <span>↗</span></div><div class="metric-number"><span id="stat-latency">—</span><small>s</small></div><div class="metric-foot">成功请求的完整响应时间</div></article>
             <article class="metric"><div class="metric-label">会话复用缓存 <span>↗</span></div><div class="metric-number"><span id="stat-cache-rate">0</span><small>%</small></div><div class="metric-foot" id="stat-cache-note">命中 0 次 · 活跃会话 0 个</div></article>
+            <article class="metric"><div class="metric-label">全池剩余额度 <span>↗</span></div><div class="metric-number quota-number" id="stat-pool-units">—</div><div class="metric-foot" id="stat-pool-units-note">分钟/点 · 等待额度数据</div></article>
+            <article class="metric"><div class="metric-label">全池预计可用 Token <span>↗</span></div><div class="metric-number quota-number" id="stat-pool-tokens">—</div><div class="metric-foot" id="stat-pool-tokens-note">本地估算 · 等待用量数据</div></article>
           </div>
           <div class="endpoint-strip"><div class="endpoint-icon">⌘</div><div class="endpoint-info"><span>你的统一 API 入口</span><code id="endpoint-label"></code></div><span class="protocol-badge">OpenAI compatible</span><button class="button compact" id="copy-endpoint">复制地址 <span>⧉</span></button></div>
           <div class="bottom-grid analytics-grid">
@@ -110,9 +113,13 @@
 
         <section data-section="keys" hidden aria-label="API 密钥">
           <div class="section-heading"><div><h2>API 密钥</h2><p>为不同客户端分配独立密钥、账号分组和每日限额。</p></div><button class="button primary" id="create-key">＋ 创建 API Key</button></div>
-          <div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>分组</th><th>今日·累计</th><th>日限额</th><th>过期</th><th>状态</th><th>操作</th></tr></thead><tbody id="keys-body"></tbody></table>
+          <div class="table-wrap"><table><thead><tr><th>名称</th><th>前缀</th><th>归属用户</th><th>分组</th><th>今日·累计</th><th>日限额</th><th>过期</th><th>状态</th><th>操作</th></tr></thead><tbody id="keys-body"></tbody></table>
             <p id="keys-empty" class="table-empty muted">尚未创建 API Key</p>
           </div>
+        </section>
+        <section data-section="users" hidden aria-label="用户管理">
+          <div class="section-heading"><div><h2>用户管理 <span class="pill" id="users-count">0 个用户</span></h2><p>为用户配置模型、思考深度和每日用量策略。</p></div><button class="button primary" id="create-user">＋ 新增用户</button></div>
+          <div class="table-wrap"><table><thead><tr><th>用户</th><th>绑定 Key</th><th>自定义策略</th><th>分组</th><th>用量（今日 / 累计）</th><th>日限额</th><th>状态</th><th>操作</th></tr></thead><tbody id="users-body"></tbody></table><p id="users-empty" class="table-empty muted">尚未创建用户</p></div>
         </section>
         <footer class="main-footer"><span>QuickPool <span class="accent">/</span> 独立开发的 Amazon Quick 本地代理</span><span class="mono">LOCAL FIRST · SESSION ISOLATED</span></footer>
       </div>
@@ -180,6 +187,7 @@
     <div class="dialog-heading"><h2 id="key-dialog-title">创建 API Key</h2><button type="button" class="icon-button" data-close="key-dialog" aria-label="关闭">×</button></div>
     <label for="key-name">名称</label><input id="key-name" required>
     <label for="key-notes">备注</label><input id="key-notes">
+    <label for="key-user">归属用户</label><select id="key-user" class="model-select"><option value="">未绑定</option></select>
     <label for="key-group">分组</label><select id="key-group" class="model-select"><option value="">全部账号</option></select>
     <div class="form-columns">
       <div><label for="key-limit">日限额（0 为不限）</label><input type="number" id="key-limit" min="0" value="0" required></div>
@@ -187,6 +195,15 @@
       <div id="key-exact-expiry" hidden><label for="key-expiry-at">过期时间（留空为永不）</label><input type="datetime-local" id="key-expiry-at" step="1"></div>
     </div>
     <div class="dialog-footer"><button type="button" class="button" data-close="key-dialog">取消</button><button class="button primary" type="submit" id="save-key">创建密钥</button></div>
+  </form></dialog>
+  <dialog id="user-dialog" class="wide-dialog" aria-labelledby="user-dialog-title"><form id="user-form">
+    <div class="dialog-heading"><h2 id="user-dialog-title">新增用户</h2><button type="button" class="icon-button" data-close="user-dialog" aria-label="关闭">×</button></div>
+    <div class="form-columns"><div><label for="user-name">用户名</label><input id="user-name" required maxlength="80"></div><div><label for="user-group">限定分组</label><input id="user-group" placeholder="留空表示全部账号"></div></div>
+    <label for="user-notes">备注</label><input id="user-notes">
+    <fieldset class="model-allowlist"><legend>允许模型（不勾选则不限）</legend><label><input type="checkbox" name="user-model" value="fast"> fast</label><label><input type="checkbox" name="user-model" value="balanced"> balanced</label><label><input type="checkbox" name="user-model" value="smart"> smart</label></fieldset>
+    <div class="form-columns"><div><label for="user-max-effort">最高思考深度封顶</label><select id="user-max-effort" class="model-select"><option value="">不限</option><option value="off">off</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div><div><label for="user-smart-effort">smart 默认思考深度覆盖</label><select id="user-smart-effort" class="model-select"><option value="">继承全局</option><option value="off">off</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div></div>
+    <div class="form-columns"><div><label for="user-request-limit">每日请求上限（0 为不限）</label><input id="user-request-limit" type="number" min="0" value="0" required></div><div><label for="user-token-limit">每日估算 Token 上限（0 为不限）</label><input id="user-token-limit" type="number" min="0" value="0" required></div></div>
+    <div class="dialog-footer"><button type="button" class="button" data-close="user-dialog">取消</button><button class="button primary" type="submit" id="save-user">创建用户</button></div>
   </form></dialog>
   <dialog id="key-result" aria-labelledby="key-result-title">
     <div class="dialog-heading"><h2 id="key-result-title">API Key 已创建</h2><button type="button" class="icon-button" data-close="key-result" aria-label="关闭">×</button></div>
