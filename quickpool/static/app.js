@@ -4,7 +4,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const state = {admin: sessionStorage.getItem('quickpool-admin') || '', config: null, accounts: [], page: 'overview',
   code: 'python', keyVisible: false, refreshing: false, authAccountId: null, authorizationUrl: '',
   authGeneration: 0, authTimer: null, authStatus: 'none', authStarting: false, quotaRefreshing: false,
-  selected: new Set(), accountStatus: '', accountSort: '', keys: []};
+  selected: new Set(), accountStatus: '', accountSort: '', keys: [], users: []};
 const baseURL = location.origin + '/v1';
 let toastTimer, refreshTimer, logQueryTimer, logRequest = 0, logOffset = 0;
 let logFilters = new URLSearchParams();
@@ -12,8 +12,15 @@ const logLimit = 50;
 
 function text(selector, value) { $(selector).textContent = String(value); }
 function escapeHTML(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch])); }
+function formatTokens(n) {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
 function toast(message) {
-  const dialog = $('dialog#key-result[open], dialog#key-dialog[open], dialog#detail-dialog[open]');
+  const dialog = $('dialog#key-result[open], dialog#key-dialog[open], dialog#user-dialog[open], dialog#detail-dialog[open]');
   const box = $('#toast');
   (dialog || document.body).append(box);
   box.textContent = message; box.hidden = false;
@@ -35,7 +42,8 @@ function changePage(page) {
     accounts: ['账号池', '你的账号，各就各位。', '添加、授权并管理独立会话，让请求有序流转。'],
     connect: ['API 接入', '一个入口，连接你的工具。', '使用 OpenAI 兼容接口接入客户端，或在这里直接测试。'],
     logs: ['请求日志', '每次转发，都有记录。', '查看真实调用结果、响应耗时与账号状态。'],
-    keys: ['API 密钥', '为每个客户端分配密钥。', '按账号分组和用量管理 API 访问。']};
+    keys: ['API 密钥', '为每个客户端分配密钥。', '按账号分组和用量管理 API 访问。'],
+    users: ['用户管理', '按用户，定义访问边界。', '管理 Key 归属、模型与每日用量策略。']};
   if (!labels[page]) return;
   state.page = page;
   $$('[data-section]').forEach(el => { el.hidden = el.dataset.section !== page; });
@@ -44,6 +52,7 @@ function changePage(page) {
   if (page === 'overview') refresh();
   if (page === 'accounts') loadSettings().catch(error => toast(error.message));
   if (['keys', 'connect', 'logs'].includes(page)) loadKeys().catch(error => toast(error.message));
+  if (['users', 'keys'].includes(page)) loadUsers().catch(error => toast(error.message));
   if (page === 'logs') loadLogs().catch(error => toast(error.message));
 }
 const accountLabels = {ready: '可用', unconfigured: '待授权', unverified: '待测试', expired: '授权失效',
@@ -80,8 +89,11 @@ function quotaPeriod(account, period, detail) {
   return `<div class="quota-period" title="${escapeHTML([updated, reset].filter(Boolean).join('；'))}"><b>${escapeHTML(label)}</b>${exhausted}${progress}${content || (progress ? '' : '<span>—</span>')}</div>`;
 }
 function quotaSummary(account) {
-  return quotaPeriod(account, 'session', false) + quotaPeriod(account, 'monthly', false)
+  const tokens = account.token_stats;
+  const estimate = tokens ? `<span class="quota-estimate">本地估算 Token ~${escapeHTML(formatTokens(tokens.estimated_remaining_tokens))}<small>近24h已用 ${escapeHTML(formatTokens(tokens.tokens_24h))} / 累计 ${escapeHTML(formatTokens(tokens.tokens_total))}</small></span>` : '';
+  const quota = quotaPeriod(account, 'session', false) + quotaPeriod(account, 'monthly', false)
     || `<span class="muted" title="${escapeHTML(account.quota?.reason)}">暂不可用</span>`;
+  return quota + estimate;
 }
 function accountTable(accounts, summary = false) {
   if (!accounts.length) return `<div class="empty"><span class="empty-symbol">▤</span><h3>${state.accounts.length ? '没有匹配的账号' : '账号池，等待你的第一个会话'}</h3><p>${state.accounts.length ? '试试其他搜索词或状态。' : '添加一个 Amazon Quick 账号，完成授权后，<br>即可通过统一 API 发起对话。'}</p>${state.accounts.length ? '' : '<button class="button primary" data-action="add">＋ 添加第一个账号</button>'}</div>`;
@@ -203,9 +215,15 @@ async function refresh() {
     const cache = result.cache_stats;
     text('#stat-cache-rate', (100 * (cache?.hit_rate ?? 0)).toFixed(1).replace(/\.0$/, ''));
     text('#stat-cache-note', '命中 ' + (cache?.hits ?? 0) + ' 次 · 活跃会话 ' + (cache?.active_sessions ?? 0) + ' 个');
+    const pool = result.pool_quota;
+    text('#stat-pool-units', pool ? `${pool.total_available_units ?? '—'} / ${pool.total_provisioned_units ?? '—'}` : '—');
+    text('#stat-pool-units-note', '分钟/点 · ' + (pool?.accounts_with_quota ?? 0) + ' 个账号有额度数据');
+    text('#stat-pool-tokens', pool?.estimated_remaining_tokens == null ? '—' : '~' + formatTokens(pool.estimated_remaining_tokens));
+    text('#stat-pool-tokens-note', '本地估算' + (pool?.estimate_basis ? ' · ' + pool.estimate_basis : '') + ' · 近24h已用 ' + formatTokens(pool?.tokens_24h) + ' / 累计 ' + formatTokens(pool?.tokens_total));
     text('#version', 'v' + result.version); text('#connection-label', '服务已连接');
     $('#connection-dot').classList.add('green'); $('#connection-dot').style.removeProperty('background');
     renderAccounts();
+    if (state.page === 'users') await loadUsers().catch(error => toast(error.message));
     renderLogAccounts();
     if (!state.quotaRefreshing && state.accounts.some(a => a.configured && (!a.quota?.updated_at || Date.now()/1000-a.quota.updated_at>300))) {
       refreshQuotaCache();
@@ -341,14 +359,15 @@ function renderKeys() {
         state.keys = state.keys.map(item => item.id === key.id ? updated : item);
         renderKeys();
       }),
-      rowButton('编辑', async () => openKeyEditor(key)),
+      rowButton('编辑', async () => { await loadUsers(); openKeyEditor(key); }),
       rowButton('删除', async () => {
         if (!confirm('删除「' + key.name + '」？此密钥将无法再发起请求。')) return;
         await api(path, {method: 'DELETE'});
         state.keys = state.keys.filter(item => item.id !== key.id);
         renderKeys();
+        await loadUsers();
       }));
-    return tableRow(name, key.key_prefix, key.group_name || '全部账号', key.requests_today + ' · ' + key.requests_total,
+    return tableRow(name, key.key_prefix, key.user_name || '未绑定', key.group_name || '全部账号', key.requests_today + ' · ' + key.requests_total,
       key.daily_limit === 0 ? '不限' : key.daily_limit, key.expires_at === null ? '永不' : formatTime(key.expires_at), badge, actions);
   }));
   $('#keys-empty').hidden = !!state.keys.length;
@@ -376,6 +395,7 @@ function openKeyEditor(key) {
   const groups = accountGroups().filter(Boolean);
   if (key?.group_name && !groups.includes(key.group_name)) groups.push(key.group_name);
   $('#key-group').replaceChildren(new Option('全部账号', ''), ...groups.map(group => new Option(group)));
+  $('#key-user').replaceChildren(new Option('未绑定', ''), ...state.users.map(user => new Option(user.name, user.id)));
   dialog.dataset.id = key ? key.id : '';
   text('#key-dialog-title', key ? '编辑 API Key' : '创建 API Key');
   text('#save-key', key ? '保存修改' : '创建密钥');
@@ -385,11 +405,84 @@ function openKeyEditor(key) {
     $('#key-name').value = key.name;
     $('#key-notes').value = key.notes;
     $('#key-group').value = key.group_name;
+    $('#key-user').value = key.user_id || '';
     $('#key-limit').value = key.daily_limit;
     if (key.expires_at !== null) {
       const date = new Date(key.expires_at * 1000);
       $('#key-expiry-at').value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
     }
+  }
+  dialog.showModal();
+}
+
+function renderUsers() {
+  text('#nav-users-count', state.users.length);
+  text('#users-count', state.users.length + ' 个用户');
+  $('#users-empty').hidden = !!state.users.length;
+  $('#users-body').replaceChildren(...state.users.map(user => {
+    const name = document.createElement('div');
+    name.textContent = user.name;
+    if (user.notes) {
+      const note = document.createElement('span');
+      note.className = 'secondary key-note'; note.textContent = user.notes; name.append(note);
+    }
+    const policy = document.createElement('div');
+    policy.className = 'user-policy';
+    for (const label of [
+      '模型: ' + (user.allowed_models.length ? user.allowed_models.join('/') : '不限'),
+      '思考封顶: ' + (user.max_thinking_effort || '不限'),
+      'smart 默认: ' + (user.smart_default_effort || '继承全局')]) {
+      const tag = document.createElement('span'); tag.textContent = label; policy.append(tag);
+    }
+    const usage = document.createElement('div');
+    usage.textContent = '请求 ' + user.requests_today + ' / ' + user.requests_total;
+    const tokens = document.createElement('span'); tokens.className = 'secondary';
+    tokens.textContent = 'Token ' + formatTokens(user.tokens_today) + ' / ' + formatTokens(user.tokens_total);
+    usage.append(tokens);
+    const limits = document.createElement('div');
+    limits.textContent = '请求 ' + (user.daily_request_limit || '不限');
+    const tokenLimit = document.createElement('span'); tokenLimit.className = 'secondary';
+    tokenLimit.textContent = 'Token ' + (user.daily_token_limit ? formatTokens(user.daily_token_limit) : '不限');
+    limits.append(tokenLimit);
+    const badge = document.createElement('span');
+    badge.className = 'status ' + (user.enabled ? 'ready' : 'disabled');
+    badge.textContent = user.enabled ? '已启用' : '已停用';
+    const path = '/api/users/' + encodeURIComponent(user.id);
+    const actions = document.createElement('div'); actions.className = 'key-actions';
+    actions.append(
+      rowButton('编辑', async () => openUserEditor(user)),
+      rowButton(user.enabled ? '停用' : '启用', async () => {
+        await api(path, {method: 'PATCH', body: JSON.stringify({enabled: !user.enabled})});
+        await loadUsers();
+      }),
+      rowButton('删除', async () => {
+        if (!confirm('删除「' + user.name + '」？')) return;
+        await api(path, {method: 'DELETE'});
+        await loadUsers(); await loadKeys();
+      }));
+    return tableRow(name, user.key_count, policy, user.group_name || '全部账号', usage, limits, badge, actions);
+  }));
+}
+async function loadUsers() {
+  const {users} = await api('/api/users');
+  state.users = users;
+  renderUsers();
+}
+function openUserEditor(user) {
+  const dialog = $('#user-dialog');
+  $('#user-form').reset();
+  dialog.dataset.id = user ? user.id : '';
+  text('#user-dialog-title', user ? '编辑用户' : '新增用户');
+  text('#save-user', user ? '保存修改' : '创建用户');
+  if (user) {
+    $('#user-name').value = user.name;
+    $('#user-notes').value = user.notes;
+    $('#user-group').value = user.group_name;
+    $$('[name="user-model"]').forEach(box => { box.checked = user.allowed_models.includes(box.value); });
+    $('#user-max-effort').value = user.max_thinking_effort;
+    $('#user-smart-effort').value = user.smart_default_effort;
+    $('#user-request-limit').value = user.daily_request_limit;
+    $('#user-token-limit').value = user.daily_token_limit;
   }
   dialog.showModal();
 }
@@ -508,7 +601,10 @@ async function openDetail(id, action) {
   $('#detail-dialog [data-action="auth-refresh"]').disabled = !account.configured;
   text('#detail-dialog [data-action="toggle"]', account.enabled ? '停用' : '启用');
   const metrics = [['请求', stats?.total], ['成功', stats?.success],
-    ['平均耗时', stats?.avg_ms == null ? null : (stats.avg_ms / 1000).toFixed(2) + 's'], ['会话复用', stats?.session_hits]];
+    ['平均耗时', stats?.avg_ms == null ? null : (stats.avg_ms / 1000).toFixed(2) + 's'], ['会话复用', stats?.session_hits],
+    ['本地估算 · 预计剩余 Token', account.token_stats?.estimated_remaining_tokens == null ? null : '~' + formatTokens(account.token_stats.estimated_remaining_tokens)],
+    ['本地估算 · 近24h已用 Token', formatTokens(account.token_stats?.tokens_24h)],
+    ['本地估算 · 累计已用 Token', formatTokens(account.token_stats?.tokens_total)]];
   $('#detail-stats').innerHTML = metrics.map(([label, value]) =>
     `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? '—')}</dd></div>`).join('');
   if (recent_logs?.length) $('#detail-logs').replaceChildren(...logRows(recent_logs, false));
@@ -704,7 +800,25 @@ $('#settings-form').addEventListener('submit', async event => {
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
 });
-$('#create-key').addEventListener('click', () => openKeyEditor());
+$('#create-key').addEventListener('click', () => loadUsers().then(() => openKeyEditor()).catch(error => toast(error.message)));
+$('#create-user').addEventListener('click', () => openUserEditor());
+$('#user-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = event.submitter; button.disabled = true;
+  const id = $('#user-dialog').dataset.id;
+  const body = {name: $('#user-name').value.trim(), notes: $('#user-notes').value.trim(), group_name: $('#user-group').value.trim(),
+    allowed_models: $$('[name="user-model"]:checked').map(box => box.value),
+    max_thinking_effort: $('#user-max-effort').value, smart_default_effort: $('#user-smart-effort').value,
+    daily_request_limit: Number($('#user-request-limit').value), daily_token_limit: Number($('#user-token-limit').value)};
+  try {
+    await api(id ? '/api/users/' + encodeURIComponent(id) : '/api/users',
+      {method: id ? 'PATCH' : 'POST', body: JSON.stringify(body)});
+    $('#user-dialog').close();
+    await loadUsers(); await loadKeys();
+    toast(id ? '用户设置已保存' : '用户已创建');
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
+});
 $('#key-form').addEventListener('submit', async event => {
   event.preventDefault();
   const button = event.submitter;
@@ -713,6 +827,7 @@ $('#key-form').addEventListener('submit', async event => {
   const exact = $('#key-expiry-at').value;
   const expires_at = id ? (exact ? new Date(exact).getTime() / 1000 : null) : (days ? Math.floor(Date.now() / 1000) + days * 86400 : null);
   const body = {name: $('#key-name').value.trim(), notes: $('#key-notes').value.trim(), group_name: $('#key-group').value,
+    user_id: $('#key-user').value,
     daily_limit: Number($('#key-limit').value), expires_at};
   button.disabled = true;
   try {
@@ -728,7 +843,7 @@ $('#key-form').addEventListener('submit', async event => {
       text('#plaintext-key', plaintext_key);
       $('#key-result').showModal();
     }
-    renderKeys();
+    renderKeys(); await loadUsers();
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
 });
