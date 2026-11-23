@@ -27,6 +27,19 @@ from .native_protocol import (
     build_user_message,
     encode_message,
 )
+from .session_cache import SessionCache
+
+
+_CONTINUATION = (
+    'This is a follow-up turn in the same conversation. Previous system instructions, tool declarations, '
+    'and history are already in this conversation. Reply only to the latest message. Follow the previous '
+    'adapter_instructions and return either {"tool_calls":[...]} or {"content":"your answer"}.'
+)
+
+
+def _can_reuse(thread_id, context, offset):
+    return bool(thread_id and isinstance(context, dict) and context.get('messages')
+                and 0 < offset < len(context['messages']))
 
 
 class UpstreamError(Exception):
@@ -68,11 +81,12 @@ class NativeSession:
 
 
 class Upstream:
-    def __init__(self, store, auth, *, connect=None, transport=None):
+    def __init__(self, store, auth, *, connect=None, transport=None, session_cache=None):
         self.store, self.auth = store, auth
         self.connect = connect or websocket_connect
         self.http_transport = transport
         self.outpost_ids = {}
+        self.session_cache = session_cache if session_cache is not None else SessionCache()
 
     async def session(self, account_id):
         credentials = await self.auth.credentials(account_id)
@@ -112,23 +126,35 @@ class Upstream:
                              self.outpost_ids.setdefault(account_id, str(uuid.uuid4())))
 
     async def stream(self, account: dict, messages: list[dict], *, agent_mode='smart', thinking_effort='off',
-                     images=None, context=None):
+                     images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0):
+        refreshed = False
         try:
-            for attempt in range(2):
+            while True:
                 emitted = False
                 try:
                     session = await self.session(account['id'])
-                    async for text in self._stream(session, account['id'], messages, agent_mode=agent_mode,
-                                                   thinking_effort=thinking_effort, images=images, context=context):
-                        emitted = True
-                        yield text
+                    try:
+                        async for text in self._stream(
+                            session, account['id'], messages, agent_mode=agent_mode,
+                            thinking_effort=thinking_effort, images=images, context=context,
+                            reuse_thread_id=reuse_thread_id, delta_offset=delta_offset,
+                        ):
+                            emitted = True
+                            yield text
+                    except UpstreamError:
+                        if emitted or not _can_reuse(reuse_thread_id, context, delta_offset):
+                            raise
+                        self.session_cache.invalidate(reuse_thread_id)
+                        reuse_thread_id, delta_offset = None, 0
+                        continue
                     return
                 except (InvalidStatus, UpstreamError) as error:
                     status = error.response.status_code if isinstance(error, InvalidStatus) else error.status
-                    if status != 401 or attempt or emitted or (isinstance(error, UpstreamError) and not error.retryable):
+                    if status != 401 or refreshed or emitted or (isinstance(error, UpstreamError) and not error.retryable):
                         raise
                     self.auth._audit(account['id'], 'chat_refresh_retry', status=status)
                     await self.auth.credentials(account['id'], force=True)
+                    refreshed = True
         except AuthError as error:
             raise UpstreamError(error.status, str(error), 20) from None
         except (TimeoutError, httpx.TimeoutException):
@@ -218,7 +244,7 @@ class Upstream:
         return attachments
 
     @staticmethod
-    def _offload_prompt(context, encode_fn):
+    def _offload_prompt(context, encode_fn, *, continuation=False):
         base = (
             'The complete API request is attached in api-context.json (messages preserve roles, order and tool call '
             'IDs; tools are external client functions). Follow system/developer messages and adapter_instructions, '
@@ -231,8 +257,8 @@ class Upstream:
         if not isinstance(context, dict):
             return base
         ctx_msgs = context.get('messages') or []
-        tools = context.get('tools') or []
-        instructions = context.get('adapter_instructions') or ''
+        tools = [] if continuation else context.get('tools') or []
+        instructions = '' if continuation else context.get('adapter_instructions') or ''
         compact_tools = []
         for t in tools:
             fn = t.get('function', t) if isinstance(t, dict) else {}
@@ -250,14 +276,20 @@ class Upstream:
             compact_tools.append({'name': fn.get('name', ''),
                                   'description': (fn.get('description') or '')[:240],
                                   'parameters': compact_schema})
-        sys_msgs = [m for m in ctx_msgs if isinstance(m, dict) and m.get('role') in ('system', 'developer')]
-        conv_msgs = [m for m in ctx_msgs if isinstance(m, dict) and m.get('role') not in ('system', 'developer')]
-        header = (
-            base + f'\n\nINLINE SUMMARY (total messages in api-context.json: {len(ctx_msgs)}): '
-            'The system instructions, declared tool schemas, and the most recent conversation turns are included '
-            'inline below so you can respond immediately WITHOUT calling file_read or run_python unless you specifically '
-            'need an older omitted turn or truncated output from api-context.json.\n'
-        )
+        system_roles = ('system',) if continuation else ('system', 'developer')
+        sys_msgs = [] if continuation else [
+            m for m in ctx_msgs if isinstance(m, dict) and m.get('role') in system_roles]
+        conv_msgs = [m for m in ctx_msgs if isinstance(m, dict) and m.get('role') not in system_roles]
+        if continuation:
+            base = _CONTINUATION + '\nFull incremental messages are attached in api-context.json.'
+            header = base + '\n\nINLINE SUMMARY (incremental messages only):\n'
+        else:
+            header = (
+                base + f'\n\nINLINE SUMMARY (total messages in api-context.json: {len(ctx_msgs)}): '
+                'The system instructions, declared tool schemas, and the most recent conversation turns are included '
+                'inline below so you can respond immediately WITHOUT calling file_read or run_python unless you specifically '
+                'need an older omitted turn or truncated output from api-context.json.\n'
+            )
         if instructions:
             header += '\n' + instructions + '\n'
         if compact_tools:
@@ -300,13 +332,22 @@ class Upstream:
         return base
 
     async def _stream(self, session, account_id, messages, *, agent_mode='smart', thinking_effort='off',
-                      images=None, context=None):
-        thread_id = str(uuid.uuid4())
+                      images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0):
+        reuse = _can_reuse(reuse_thread_id, context, delta_offset)
+        thread_id = reuse_thread_id if reuse else str(uuid.uuid4())
         decoder, text = NativeMessageDecoder(session.transport), NativeTextEvents(thread_id)
         url, headers = session.connection()
-        # OpenAI history is serialized as text in a fresh Quick conversation.
-        prompt = messages[0]['content'] if len(messages) == 1 else '\n\n'.join(
-            f"[{m['role']}]\n{m['content']}" for m in messages)
+        if reuse:
+            delta_msgs = context['messages'][delta_offset:]
+            visible_delta = [m for m in delta_msgs if m['role'] != 'system']
+            prompt = _CONTINUATION + '\n\n' + '\n\n'.join(
+                f"[{m['role']}]\n{json.dumps(m, ensure_ascii=False, separators=(',', ':'))}" for m in visible_delta)
+            if images and not any('[图片附件' in (m.get('content') or '') for m in visible_delta):
+                images = None
+        else:
+            # OpenAI history is serialized as text in a fresh Quick conversation.
+            prompt = messages[0]['content'] if len(messages) == 1 else '\n\n'.join(
+                f"[{m['role']}]\n{m['content']}" for m in messages)
         emitted, refresh_at = False, time.monotonic()+900
         # AIDP uses browser-style keepalives and doesn't answer WS Ping; Gateway does.
         async with self.connect(url, additional_headers=headers, proxy=None, max_size=16*1024*1024,
@@ -318,7 +359,8 @@ class Upstream:
             await send(build_session_connect(session.transport, outpost_id=session.outpost_id,
                                              actor_arn=session.actor_arn, app_version=CLIENT_VERSION))
             await send({'type': 'federate_status', 'payload': {}})
-            await send(build_session_create(thread_id))
+            if not reuse:
+                await send(build_session_create(thread_id))
             await send(build_conversation_connect(thread_id, outpost_id=session.outpost_id,
                                                    app_version=CLIENT_VERSION))
             attachments = await self.upload_images(session, images, thread_id) if images else []
@@ -332,13 +374,17 @@ class Upstream:
             json_bytes = len(json.dumps(message, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
             # Conservative wire budget also covers AIDP base64 expansion below the observed 64 KB limit.
             if inline_bytes > 60_000:
-                payload_obj = context if context is not None else {'messages': messages}
+                if reuse:
+                    payload_obj = {**context, 'messages': delta_msgs}
+                else:
+                    payload_obj = context if context is not None else {'messages': messages}
                 document = json.dumps(payload_obj, ensure_ascii=False, indent=1).encode('utf-8')
                 if len(document) > 5 * 1024 * 1024:
                     document = json.dumps(payload_obj, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
                 attachments += await self.upload_files(session, [{'data': document, 'name': 'api-context.json',
                     'mimeType': 'application/json', 'type': 'file'}], thread_id)
-                prompt = self._offload_prompt(payload_obj, lambda p: encode_message(session.transport, user_message(p)))
+                prompt = self._offload_prompt(payload_obj, lambda p: encode_message(session.transport, user_message(p)),
+                                              continuation=reuse)
                 message = user_message(prompt)
                 encoded = encode_message(session.transport, message)
             logging.getLogger(__name__).info('quick_message text_bytes=%d json_bytes=%d inline_wire_bytes=%d wire_bytes=%d offloaded=%s',
