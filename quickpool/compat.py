@@ -172,9 +172,18 @@ class Prepared:
                 for call in calls:
                     if not isinstance(call,dict):
                         raise CompatibilityError('Quick 工具调用结构无效')
-                    name, arguments = call.get('name'), call.get('arguments')
+                    fn = call.get('function') if isinstance(call.get('function'), dict) else None
+                    name = call.get('name') if 'name' in call else (fn.get('name') if fn else None)
+                    arguments = call.get('arguments') if 'arguments' in call else (fn.get('arguments') if fn else None)
                     if not isinstance(name,str) or name not in self.functions or (self.selected and name != self.selected):
                         raise CompatibilityError('Quick 请求了未声明或未选中的函数')
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except ValueError:
+                            raise CompatibilityError('Quick 工具参数必须为 JSON 对象') from None
+                    elif arguments is None:
+                        arguments = {}
                     if not isinstance(arguments,dict):
                         raise CompatibilityError('Quick 工具参数必须为 JSON 对象')
                     check_instance(arguments, self.functions[name].get('parameters', {'type':'object'}))

@@ -59,3 +59,34 @@ def test_commentary_cannot_override_tool_choice():
                                     tools=TOOLS, tool_choice='none'))
     with pytest.raises(CompatibilityError, match='tool_choice'):
         prepared.result(COMMENTARY + '\n' + json.dumps(CALL))
+
+
+def test_tool_calls_accept_stringified_json_arguments_and_nested_function():
+    tools = [{'type': 'function', 'function': {'name': 'Bash', 'parameters': {
+        'type': 'object', 'properties': {'command': {'type': 'string'}, 'description': {'type': 'string'}},
+        'required': ['command'],
+    }}}, {'type': 'function', 'function': {'name': 'Ping', 'parameters': {'type': 'object'}}}]
+    prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'run'}], tools=tools))
+    mixed = json.dumps({'tool_calls': [
+        {'name': 'Bash', 'arguments': {'command': 'pwd'}},
+        {'name': 'Bash', 'arguments': json.dumps({'command': 'ls -la', 'description': 'list'})},
+        {'type': 'function', 'function': {'name': 'Bash', 'arguments': json.dumps({'command': 'date'})}},
+        {'name': 'Ping'},
+    ]})
+    message, finish = prepared.result(mixed)
+    assert finish == 'tool_calls'
+    assert [json.loads(c['function']['arguments']) for c in message['tool_calls']] == [
+        {'command': 'pwd'},
+        {'command': 'ls -la', 'description': 'list'},
+        {'command': 'date'},
+        {},
+    ]
+
+
+@pytest.mark.parametrize('bad_args', ['not-json', '[1,2,3]', '123', 42])
+def test_tool_calls_reject_non_object_stringified_arguments(bad_args):
+    tools = [{'type': 'function', 'function': {'name': 'Bash', 'parameters': {'type': 'object'}}}]
+    prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'run'}], tools=tools))
+    with pytest.raises(CompatibilityError, match='JSON 对象'):
+        prepared.result(json.dumps({'tool_calls': [{'name': 'Bash', 'arguments': bad_args}]}))
+
