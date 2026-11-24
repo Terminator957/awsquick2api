@@ -434,7 +434,12 @@ class Upstream:
                 else:
                     events = decoder.feed(raw)
                 for event in events:
-                    if event.get('type') == 'error' and event.get('thread_id') in (None, '', thread_id):
+                    kind = event.get('type')
+                    if kind == 'guardrail_blocked' and event.get('thread_id') in (None, '', thread_id):
+                        raise UpstreamError(400, 'Quick 上游安全护栏拦截了本轮内容，请调整表述后重试', retryable=False)
+                    if kind == 'turn_aborted' and event.get('thread_id') in (None, '', thread_id):
+                        raise UpstreamError(502, 'Quick 上游中止了本轮生成，请重试', retryable=False)
+                    if kind == 'error' and event.get('thread_id') in (None, '', thread_id):
                         payload = event.get('payload', {})
                         payload = payload if isinstance(payload, dict) else {}
                         code = event.get('code') or payload.get('error_code') or payload.get('code', '')

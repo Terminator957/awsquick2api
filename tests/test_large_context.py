@@ -265,3 +265,32 @@ async def test_offload_includes_inline_recent_turns_and_multiline_attachment(mon
     assert uploaded and b'\n' in uploaded[0]['data']
     assert json.loads(uploaded[0]['data']) == context
 
+
+@pytest.mark.parametrize('event_type,expected_status,expected_text', [
+    ('guardrail_blocked', 400, '安全护栏'),
+    ('turn_aborted', 502, '中止了本轮生成'),
+])
+def test_guardrail_and_abort_events_report_clearly_without_penalizing_account(
+        gateway, monkeypatch, event_type, expected_status, expected_text):
+    client, app, _, key, backend = gateway
+    account = add(gateway, state='ready')
+    add(gateway, 'second', state='ready')
+
+    def block(socket, thread_id):
+        socket.frames.append(output_frame({'type': 'text_delta', 'thread_id': thread_id,
+            'message_id': 'answer', 'payload': {'delta': 'That content did not pass our automated check.'}}))
+        socket.frames.append(output_frame({'type': event_type, 'thread_id': thread_id, 'payload': {}}))
+
+    monkeypatch.setattr(NativeSocket, 'prepare_response', block)
+    response = client.post('/v1/messages', headers=key, json={
+        'model': 'claude-opus-5-5', 'max_tokens': 100,
+        'messages': [{'role': 'user', 'content': 'test'}],
+        'tools': [{'name': 'check', 'input_schema': {'type': 'object'}}],
+    })
+    assert response.status_code == expected_status
+    assert expected_text in response.json()['error']['message']
+    assert len(backend.connections) == 1
+    current = app.state.store.account(account['id'])
+    assert current['state'] == 'ready' and current['cooldown_until'] == 0 and current['failures'] == 0
+
+
