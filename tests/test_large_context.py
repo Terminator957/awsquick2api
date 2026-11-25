@@ -294,3 +294,24 @@ def test_guardrail_and_abort_events_report_clearly_without_penalizing_account(
     assert current['state'] == 'ready' and current['cooldown_until'] == 0 and current['failures'] == 0
 
 
+def test_content_filtered_error_returns_400_without_penalizing_account(gateway, monkeypatch):
+    client, app, _, key, backend = gateway
+    account = add(gateway, state='ready')
+    add(gateway, 'second', state='ready')
+
+    def block(socket, thread_id):
+        socket.frames.append(output_frame({'type': 'error', 'thread_id': thread_id,
+            'code': 'content_filtered', 'message': "The model's content filter stopped this reply."}))
+
+    monkeypatch.setattr(NativeSocket, 'prepare_response', block)
+    response = client.post('/v1/messages', headers=key, json={
+        'model': 'claude-sonnet-4-6', 'max_tokens': 100,
+        'messages': [{'role': 'user', 'content': 'test'}],
+    })
+    assert response.status_code == 400
+    assert '内容过滤' in response.json()['error']['message']
+    assert len(backend.connections) == 1
+    current = app.state.store.account(account['id'])
+    assert current['state'] == 'ready' and current['cooldown_until'] == 0 and current['failures'] == 0
+
+

@@ -451,6 +451,9 @@ class Upstream:
                                     'INVALID_REQUEST'):
                             raise UpstreamError(400, f'Quick 请求被拒绝：{code}；请检查请求大小或上下文格式',
                                                 retryable=False)
+                        if code == 'content_filtered':
+                            raise UpstreamError(400, 'Quick 上游内容过滤拦截了本轮回复，请调整表述或开启新对话后重试',
+                                                retryable=False, code='content_filtered')
                         status = 429 if code in ('ThrottlingException', 'rate_limited') else 502
                         retryable = event.get('retryable', payload.get('retryable'))
                         safe_code = code if isinstance(code, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', code) else ''
