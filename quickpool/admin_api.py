@@ -41,10 +41,14 @@ class SettingsPatch(BaseModel):
     session_cache_ttl: int | None = Field(default=None, ge=60, le=86400)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     max_images: int | None = Field(default=None, ge=1, le=500)
+    max_image_mb: int | None = Field(default=None, ge=1, le=20)
     max_messages: int | None = Field(default=None, ge=10, le=10000)
     max_tools: int | None = Field(default=None, ge=1, le=1000)
     max_body_mb: int | None = Field(default=None, ge=1, le=100)
+    stream_timeout_sec: int | None = Field(default=None, ge=60, le=900)
+    log_retention: int | None = Field(default=None, ge=1000, le=100000)
     smart_default_effort: Literal['off', 'low', 'medium', 'high'] | None = None
+    client_restriction: Literal['off', 'claude_only'] | None = None
 
 
 def register_admin_routes(app, admin):
@@ -127,7 +131,7 @@ def register_admin_routes(app, admin):
         filters = dict(account_id=account_id, status=status, model=model, api_key_id=api_key_id, q=q)
         logs = app.state.store.logs(limit=5000, **{key: value for key, value in filters.items() if value})
         rows = logs['requests'] if isinstance(logs, dict) else logs
-        columns = ('created_at', 'id', 'account_id', 'account_name', 'api_key_id', 'model', 'status',
+        columns = ('created_at', 'id', 'account_id', 'account_name', 'api_key_id', 'model', 'thinking_effort', 'status',
                    'duration_ms', 'output_chars', 'session_hit', 'error')
         output = io.StringIO()
         writer = csv.writer(output)

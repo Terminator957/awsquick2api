@@ -131,7 +131,7 @@ class Upstream:
 
     async def stream(self, account: dict, messages: list[dict], *, agent_mode='smart', thinking_effort='off',
                      images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
-                     state_out: dict | None = None):
+                     state_out: dict | None = None, stream_timeout_sec: int = 300):
         refreshed = False
         try:
             while True:
@@ -143,7 +143,7 @@ class Upstream:
                             session, account['id'], messages, agent_mode=agent_mode,
                             thinking_effort=thinking_effort, images=images, context=context,
                             reuse_thread_id=reuse_thread_id, delta_offset=delta_offset,
-                            state_out=state_out,
+                            state_out=state_out, stream_timeout_sec=stream_timeout_sec,
                         ):
                             emitted = True
                             yield text
@@ -341,7 +341,7 @@ class Upstream:
 
     async def _stream(self, session, account_id, messages, *, agent_mode='smart', thinking_effort='off',
                       images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
-                      state_out: dict | None = None):
+                      state_out: dict | None = None, stream_timeout_sec: int = 300):
         reuse = _can_reuse(reuse_thread_id, context, delta_offset)
         thread_id = reuse_thread_id if reuse else str(uuid.uuid4())
         if state_out is not None:
@@ -405,7 +405,8 @@ class Upstream:
                 raise UpstreamError(400, 'Quick 附件引用消息仍超过安全发送预算；请减少附件数量', retryable=False)
             await socket.send(encoded)
             started_at = time.monotonic()
-            deadline = started_at + 300
+            timeout_sec = max(60, min(900, int(stream_timeout_sec)))
+            deadline = started_at + timeout_sec
             last_recv_at = started_at
             next_ping_at = started_at + self.app_ping_interval if self.app_ping_interval else float('inf')
             while time.monotonic() < deadline:

@@ -84,7 +84,9 @@ def test_batch_value_bounds():
 
 def test_settings_model_bounds():
     assert SettingsPatch().model_dump() == dict.fromkeys(
-        ("scheduling_strategy", "session_cache_ttl", "max_attempts", "max_images", "max_messages", "max_tools", "max_body_mb", "smart_default_effort"))
+        ("scheduling_strategy", "session_cache_ttl", "max_attempts", "max_images", "max_image_mb",
+         "max_messages", "max_tools", "max_body_mb", "stream_timeout_sec", "log_retention",
+         "smart_default_effort", "client_restriction"))
     for strategy in ("weighted", "quota_first", "round_robin"):
         assert SettingsPatch(scheduling_strategy=strategy).scheduling_strategy == strategy
     with pytest.raises(ValidationError, match="scheduling_strategy"):
@@ -196,7 +198,9 @@ def test_requests_today_uses_utc_midnight_and_key_id(store, monkeypatch):
 def test_settings_defaults_and_patch(store):
     defaults = {
         "scheduling_strategy": "weighted", "session_cache_ttl": 1800, "max_attempts": 3,
-        "max_images": 50, "max_messages": 2000, "max_tools": 256, "max_body_mb": 20, "smart_default_effort": "high",
+        "max_images": 50, "max_image_mb": 5, "max_messages": 2000, "max_tools": 256,
+        "max_body_mb": 20, "stream_timeout_sec": 300, "log_retention": 10000,
+        "smart_default_effort": "high", "client_restriction": "off",
     }
     assert store.get_settings() == defaults
     updated = store.patch_settings({
@@ -256,7 +260,7 @@ def test_store_migrates_old_database(tmp_path):
         assert store.logs() == [{
             "id": "old-request", "created_at": 2000, "account_id": "old-account", "model": "amazon-fast",
             "status": 502, "duration_ms": 123, "output_chars": 0, "error": "old error", "session_hit": False,
-            "api_key_id": "", "input_tokens": 0, "output_tokens": 0, "user_id": "",
+            "api_key_id": "", "input_tokens": 0, "output_tokens": 0, "user_id": "", "thinking_effort": "",
             "account_name": "Existing", "api_key_name": None,
         }]
     finally:

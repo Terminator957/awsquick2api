@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark"><title>QuickPool · Amazon Quick 网关</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/app.css?v=20261125a"><script src="/static/app.js?v=20261125a" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=20261125b"><script src="/static/app.js?v=20261125b" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -84,10 +84,14 @@
               <label>会话缓存时长（秒）<input type="number" id="session-cache-ttl" min="60" max="86400" required></label>
               <label>最大尝试次数<input type="number" id="max-attempts" min="1" max="5" required></label>
               <label>单次最多图片数<input type="number" id="max-images" min="1" max="500" required></label>
+              <label>单图上限（MiB）<input type="number" id="max-image-mb" min="1" max="20" required></label>
               <label>单次最多消息数<input type="number" id="max-messages" min="10" max="10000" required></label>
               <label>单次最多工具数<input type="number" id="max-tools" min="1" max="1000" required></label>
               <label>请求体上限（MiB）<input type="number" id="max-body-mb" min="1" max="100" required></label>
+              <label>单轮超时（秒）<input type="number" id="stream-timeout-sec" min="60" max="900" required></label>
+              <label>日志保留条数<input type="number" id="log-retention" min="1000" max="100000" required></label>
               <label>smart 默认思考深度<select class="filter-select" id="smart-default-effort"><option value="high">high（Quick 最高档）</option><option value="medium">medium</option><option value="low">low</option><option value="off">off（关闭）</option></select></label>
+              <label>客户端访问限制<select class="filter-select" id="client-restriction"><option value="off">不限制</option><option value="claude_only">仅限 Claude Code / 桌面端</option></select></label>
             </div>
           </form>
         </section>
@@ -106,7 +110,7 @@
             <input id="log-query" type="search" aria-label="日志关键词" placeholder="关键词">
             <button class="button compact" type="submit">查询</button><button class="button compact" id="export-logs" type="button">导出 CSV</button>
           </form>
-          <div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>账号</th><th>API Key</th><th>模型 / 缓存</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="logs-body"></tbody></table><div id="logs-empty" class="empty compact-empty"><span class="empty-symbol">≡</span><h3>还没有请求记录</h3><p>账号测试和代理调用会在这里留下记录。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>账号</th><th>API Key</th><th>模型 / 缓存</th><th>思考深度</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="logs-body"></tbody></table><div id="logs-empty" class="empty compact-empty"><span class="empty-symbol">≡</span><h3>还没有请求记录</h3><p>账号测试和代理调用会在这里留下记录。</p></div></div>
           <div class="log-pager" id="log-pager" hidden>
             <button class="button compact" id="log-prev">上一页</button><span id="log-page" class="muted" aria-live="polite"></span><button class="button compact" id="log-next">下一页</button>
           </div>
@@ -153,7 +157,7 @@
     </section>
     <section class="detail-section"><h3>近 24 小时统计</h3><dl id="detail-stats" class="detail-meta"></dl></section>
     <section class="detail-section"><h3>最近请求</h3>
-      <div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>模型 / 缓存</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="detail-logs"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>请求 / 时间</th><th>模型 / 缓存</th><th>思考深度</th><th>状态</th><th>完整耗时</th><th>输出字符</th><th>说明</th></tr></thead><tbody id="detail-logs"></tbody></table></div>
     </section>
     <section class="detail-section"><h3>授权审计事件</h3><ul id="detail-events"></ul></section>
     <div class="dialog-footer detail-actions">

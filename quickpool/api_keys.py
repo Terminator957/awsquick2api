@@ -1,8 +1,28 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import time
+
+
+_CLAUDE_CLI_UA = re.compile(r'(?:^|[\s/])claude-(?:cli|code|desktop)(?:/|\s|$)', re.IGNORECASE)
+_ANTHROPIC_SDK_UA = re.compile(r'(?:^|[\s/])(?:anthropic-(?:js|typescript|sdk)|claude)(?:/|\s|$)', re.IGNORECASE)
+
+
+def is_claude_client(headers, path: str = '') -> bool:
+    """Sub2API-style client restriction: allow only Claude Code CLI and Claude Desktop."""
+    ua = (headers.get('user-agent') or '').strip()
+    if _CLAUDE_CLI_UA.search(ua):
+        return True
+    has_anthropic_header = bool(headers.get('anthropic-version') or headers.get('anthropic-beta'))
+    has_stainless = bool(headers.get('x-stainless-lang') or headers.get('x-stainless-package-version'))
+    is_messages_endpoint = path in ('/messages', '/v1/messages', '/messages/count_tokens', '/v1/messages/count_tokens')
+    if _ANTHROPIC_SDK_UA.search(ua) and (has_anthropic_header or has_stainless):
+        return True
+    if is_messages_endpoint and has_anthropic_header and has_stainless and 'claude' in ua.lower():
+        return True
+    return False
 
 
 def generate_api_key() -> tuple[str, str, str]:

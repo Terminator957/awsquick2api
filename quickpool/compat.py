@@ -46,13 +46,13 @@ def check_instance(instance, schema):
         raise CompatibilityError('Quick 回复不符合请求的 JSON Schema') from None
 
 
-def image_data(url):
+def image_data(url, *, max_image_mb: int = 5):
     # No remote fetch: prevents SSRF and leaking caller credentials to redirects.
     try:
         header, data = url.split(',', 1)
         mime = {'data:image/png;base64':'image/png', 'data:image/jpeg;base64':'image/jpeg'}[header.lower()]
         raw = base64.b64decode(data, validate=True)
-        if not raw or len(raw) > 3 * 1024 * 1024:
+        if not raw or len(raw) > max_image_mb * 1024 * 1024:
             raise ValueError
         if mime == 'image/png' and not raw.startswith(b'\x89PNG\r\n\x1a\n'):
             raise ValueError
@@ -60,13 +60,14 @@ def image_data(url):
             raise ValueError
         return raw, mime
     except (ValueError, KeyError, TypeError, binascii.Error):
-        raise CompatibilityError('图片须为 PNG/JPEG base64 data URL，单图不超过 3 MiB；暂不抓取远程 URL') from None
+        raise CompatibilityError(f'图片须为 PNG/JPEG base64 data URL，单图不超过 {max_image_mb} MiB；暂不抓取远程 URL') from None
 
 
 class Prepared:
-    def __init__(self, request, *, max_images: int = 50, max_messages: int = 2000,
-                 max_tools: int = 256, max_context_mb: int = 20):
+    def __init__(self, request, *, max_images: int = 50, max_image_mb: int = 5,
+                 max_messages: int = 2000, max_tools: int = 256, max_context_mb: int = 20):
         self.request = request
+        self.max_tools = max_tools
         if len(request.messages) > max_messages:
             raise CompatibilityError(f'每次请求最多 {max_messages} 条消息')
         self.images = []
@@ -106,7 +107,7 @@ class Prepared:
                     if part['type'] == 'text':
                         texts.append(part['text'])
                     else:
-                        self.images.append(image_data(part['image_url']['url']))
+                        self.images.append(image_data(part['image_url']['url'], max_image_mb=max_image_mb))
                         texts.append(f'[图片附件 {len(self.images)}]')
                 item['content'] = '\n'.join(texts)
             messages.append(item)
@@ -170,7 +171,7 @@ class Prepared:
         if self.tools:
             calls = value.get('tool_calls')
             if calls:
-                if self.choice == 'none' or not isinstance(calls,list) or len(calls) > 64:
+                if self.choice == 'none' or not isinstance(calls,list) or len(calls) > self.max_tools:
                     raise CompatibilityError('Quick 回复违反 tool_choice')
                 if not self.request.parallel_tool_calls and len(calls) > 1:
                     raise CompatibilityError('Quick 回复包含不允许的并行调用')

@@ -19,7 +19,7 @@ from starlette.requests import ClientDisconnect
 
 from . import __version__
 from .admin_api import handle_batch_action, register_admin_routes
-from .api_keys import KeyAuthError, resolve_user_policy, verify_managed_key
+from .api_keys import KeyAuthError, is_claude_client, resolve_user_policy, verify_managed_key
 from .cli_api import estimate_tokens, register_cli_routes
 from .compat import CompatibilityError, Prepared
 from .models import (
@@ -137,6 +137,13 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         if request.url.path in ('/messages', '/v1/messages', '/messages/count_tokens', '/v1/messages/count_tokens'):
             token = token or request.headers.get('x-api-key', '')
         store = request.app.state.store
+        settings = store.get_settings()
+        if settings.get("client_restriction") == "claude_only":
+            playground_token = request.headers.get("x-quickpool-admin", "")
+            is_playground = bool(playground_token) and hmac.compare_digest(
+                playground_token.encode(), store.admin_key.encode())
+            if not is_playground and not is_claude_client(request.headers, request.url.path):
+                raise HTTPException(403, "仅允许 Claude Code 或 Claude 桌面端调用")
         if hmac.compare_digest(token.encode(), store.api_key.encode()):
             current_key_ctx.set({})
             return
@@ -358,6 +365,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             prepared = Prepared(
                 value,
                 max_images=max(1, min(500, int(settings.get("max_images", 50)))),
+                max_image_mb=max(1, min(20, int(settings.get("max_image_mb", 5)))),
                 max_messages=max(10, min(10000, int(settings.get("max_messages", 2000)))),
                 max_tools=max(1, min(1000, int(settings.get("max_tools", 256)))),
                 max_context_mb=max(1, min(100, int(settings.get("max_body_mb", 20)))),
@@ -391,6 +399,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             tried.add(account["id"])
             use_reuse = matched_entry is not None and account["id"] == matched_entry.account_id
             stream_state = {}
+            stream_timeout_sec = max(60, min(900, int(settings.get("stream_timeout_sec", 300))))
             iterator = app.state.upstream.stream(
                 account, messages, agent_mode=value.mode,
                 thinking_effort=effective_effort, images=prepared.images,
@@ -398,6 +407,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 reuse_thread_id=matched_entry.thread_id if use_reuse else None,
                 delta_offset=delta_offset if use_reuse else 0,
                 state_out=stream_state,
+                stream_timeout_sec=stream_timeout_sec,
             )
             try:
                 first = await anext(iterator)
@@ -411,7 +421,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                                     round((time.monotonic() - started) * 1000), 0, str(exc),
                                     model=value.model, session_hit=bool(stream_state.get('reused')),
                                     api_key_id=api_key_id, input_tokens=input_tokens,
-                                    output_tokens=0, user_id=user_id)
+                                    output_tokens=0, user_id=user_id, thinking_effort=effective_effort)
                 if not exc.retryable:
                     break
             except BaseException:
@@ -466,7 +476,8 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                                     round((time.monotonic() - started) * 1000), chars, error,
                                     model=value.model, session_hit=session_reused,
                                     api_key_id=api_key_id, input_tokens=input_tokens,
-                                    output_tokens=(chars + 3) // 4 if chars else 0, user_id=user_id)
+                                    output_tokens=(chars + 3) // 4 if chars else 0, user_id=user_id,
+                                    thinking_effort=effective_effort)
 
         def chunk(delta, finish=None):
             return {"id": request_id, "object": "chat.completion.chunk", "created": created,

@@ -110,10 +110,14 @@ class SettingsPatch(BaseModel):
     session_cache_ttl: int | None = Field(default=None, ge=60, le=86400)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     max_images: int | None = Field(default=None, ge=1, le=500)
+    max_image_mb: int | None = Field(default=None, ge=1, le=20)
     max_messages: int | None = Field(default=None, ge=10, le=10000)
     max_tools: int | None = Field(default=None, ge=1, le=1000)
     max_body_mb: int | None = Field(default=None, ge=1, le=100)
+    stream_timeout_sec: int | None = Field(default=None, ge=60, le=900)
+    log_retention: int | None = Field(default=None, ge=1000, le=100000)
     smart_default_effort: Literal["off", "low", "medium", "high"] | None = None
+    client_restriction: Literal["off", "claude_only"] | None = None
 
 
 class NativeLoginRequest(BaseModel):

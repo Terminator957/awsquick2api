@@ -27,10 +27,14 @@ _SETTINGS_DEFAULTS = {
     "session_cache_ttl": 1800,
     "max_attempts": 3,
     "max_images": 50,
+    "max_image_mb": 5,
     "max_messages": 2000,
     "max_tools": 256,
     "max_body_mb": 20,
+    "stream_timeout_sec": 300,
+    "log_retention": 10000,
     "smart_default_effort": "high",
+    "client_restriction": "off",
 }
 
 
@@ -113,7 +117,8 @@ class Store:
             self.db.execute("ALTER TABLE requests ADD COLUMN api_key_id TEXT NOT NULL DEFAULT ''")
         for name, definition in {'input_tokens': 'INTEGER NOT NULL DEFAULT 0',
                                  'output_tokens': 'INTEGER NOT NULL DEFAULT 0',
-                                 'user_id': "TEXT NOT NULL DEFAULT ''"}.items():
+                                 'user_id': "TEXT NOT NULL DEFAULT ''",
+                                 'thinking_effort': "TEXT NOT NULL DEFAULT ''"}.items():
             if name not in req_columns:
                 self.db.execute(f'ALTER TABLE requests ADD COLUMN {name} {definition}')
         key_columns = {row[1] for row in self.db.execute('PRAGMA table_info(api_keys)')}
@@ -438,18 +443,20 @@ class Store:
 
     def log(self, request_id, account_id, status, duration_ms, output_chars, error="", *,
             model=DEFAULT_MODEL, session_hit: bool = False, api_key_id: str = "",
-            input_tokens: int = 0, output_tokens: int = 0, user_id: str = ""):
+            input_tokens: int = 0, output_tokens: int = 0, user_id: str = "",
+            thinking_effort: str = ""):
+        retention = max(1000, min(100000, int(self.get_settings().get("log_retention", 10000))))
         with self.lock, self.db:
             self.db.execute(
                 "INSERT INTO requests"
                 "(id,created_at,account_id,model,status,duration_ms,output_chars,error,session_hit,api_key_id,"
-                "input_tokens,output_tokens,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "input_tokens,output_tokens,user_id,thinking_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (request_id, time.time(), account_id, model, status,
                  duration_ms, output_chars, error[:200], 1 if session_hit else 0, api_key_id,
-                 input_tokens, output_tokens, user_id))
+                 input_tokens, output_tokens, user_id, thinking_effort))
             # Bounded local retention; never log prompts, cookies, or raw upstream bodies.
             self.db.execute("DELETE FROM requests WHERE id IN (SELECT id FROM requests "
-                            "ORDER BY created_at DESC LIMIT -1 OFFSET 10000)")
+                            "ORDER BY created_at DESC LIMIT -1 OFFSET ?)", (retention,))
 
     @staticmethod
     def _logs_where(account_id, status, model, api_key_id, q):

@@ -210,8 +210,8 @@ def test_csv_export(admin_gateway, monkeypatch):
     assert response.headers['content-type'] == 'text/csv; charset=utf-8'
     assert response.headers['content-disposition'] == 'attachment; filename=quickpool-logs.csv'
     reader = csv.DictReader(io.StringIO(response.text))
-    assert reader.fieldnames == ['created_at', 'id', 'account_id', 'account_name', 'api_key_id', 'model', 'status',
-                                 'duration_ms', 'output_chars', 'session_hit', 'error']
+    assert reader.fieldnames == ['created_at', 'id', 'account_id', 'account_name', 'api_key_id', 'model',
+                                 'thinking_effort', 'status', 'duration_ms', 'output_chars', 'session_hit', 'error']
     row, = reader
     assert row['id'] == 'bad' and row['error'] == "'=SUM(1,2)" and row['api_key_id'] == ''
 

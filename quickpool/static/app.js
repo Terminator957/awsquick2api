@@ -337,15 +337,19 @@ async function loadSessions() {
   $('#sessions-empty').hidden = !!sessions.length;
   $('#clear-sessions').disabled = !sessions.length;
 }
-function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_messages = 2000, max_tools = 256, max_body_mb = 20, smart_default_effort = 'high'}) {
+function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off'}) {
   $('#scheduling-strategy').value = scheduling_strategy;
   $('#session-cache-ttl').value = session_cache_ttl;
   $('#max-attempts').value = max_attempts;
   $('#max-images').value = max_images;
+  $('#max-image-mb').value = max_image_mb;
   $('#max-messages').value = max_messages;
   $('#max-tools').value = max_tools;
   $('#max-body-mb').value = max_body_mb;
+  $('#stream-timeout-sec').value = stream_timeout_sec;
+  $('#log-retention').value = log_retention;
   $('#smart-default-effort').value = smart_default_effort;
+  $('#client-restriction').value = client_restriction;
   $('#settings-form button').disabled = false;
 }
 async function loadSettings() { renderSettings(await api('/api/settings')); }
@@ -575,7 +579,8 @@ function logRows(requests, showAccount) {
       cells.push(log.account_name ?? '已删除账号');
       cells.push(log.api_key_name ?? (log.api_key_id ? '已删除 Key' : '主 API Key'));
     }
-    cells.push(model, status, log.duration_ms == null ? '—' : (log.duration_ms / 1000).toFixed(2) + 's', log.output_chars ?? '—', log.error || '完成');
+    const effort = log.thinking_effort || '—';
+    cells.push(model, effort, status, log.duration_ms == null ? '—' : (log.duration_ms / 1000).toFixed(2) + 's', log.output_chars ?? '—', log.error || '完成');
     const row = tableRow(...cells);
     row.cells[0].setAttribute('title', log.id ?? '');
     for (const index of [0, cells.length - 3, cells.length - 2]) row.cells[index].className = 'mono';
@@ -832,9 +837,11 @@ $('#settings-form').addEventListener('submit', async event => {
   const button = event.submitter;
   const settings = {scheduling_strategy: $('#scheduling-strategy').value, session_cache_ttl: Number($('#session-cache-ttl').value),
     max_attempts: Number($('#max-attempts').value), max_images: Number($('#max-images').value),
-    max_messages: Number($('#max-messages').value), max_tools: Number($('#max-tools').value),
-    max_body_mb: Number($('#max-body-mb').value),
-    smart_default_effort: $('#smart-default-effort').value};
+    max_image_mb: Number($('#max-image-mb').value), max_messages: Number($('#max-messages').value),
+    max_tools: Number($('#max-tools').value), max_body_mb: Number($('#max-body-mb').value),
+    stream_timeout_sec: Number($('#stream-timeout-sec').value), log_retention: Number($('#log-retention').value),
+    smart_default_effort: $('#smart-default-effort').value,
+    client_restriction: $('#client-restriction').value};
   button.disabled = true;
   try {
     renderSettings(await api('/api/settings', {method: 'PATCH', body: JSON.stringify(settings)}));
@@ -977,7 +984,7 @@ $('#playground-form').addEventListener('submit', async event => {
   try {
     if (!state.config) throw Error('请先登录管理界面');
     const response = await fetch('/v1/chat/completions', {method: 'POST', headers: {'Content-Type':'application/json',
-      'Authorization': 'Bearer ' + await apiKey()}, body: JSON.stringify({model:$('#playground-model').value, stream:true,
+      'Authorization': 'Bearer ' + await apiKey(), 'X-QuickPool-Admin': state.admin}, body: JSON.stringify({model:$('#playground-model').value, stream:true,
       messages:[{role:'user',content:$('#playground-input').value}]})});
     if (!response.ok) { const error = await response.json(); throw Error(error.error?.message || error.detail || '请求失败'); }
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let done = false;
