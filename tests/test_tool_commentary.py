@@ -34,7 +34,6 @@ def test_observed_commentary_and_tool_json_reach_messages_client(gateway):
 
 
 @pytest.mark.parametrize('reply', [
-    'Here is an example {} and then ' + json.dumps(CALL),
     COMMENTARY + '\n' + json.dumps(CALL) + '\nextra trailing text',
     COMMENTARY + '\n' + json.dumps(CALL).replace('report_failure', 'undeclared'),
     COMMENTARY + '\n' + json.dumps(CALL).replace('"head": 73', '"head": "73"'),
@@ -44,6 +43,18 @@ def test_commentary_does_not_relax_json_or_tool_validation(reply):
                                     tools=TOOLS, tool_choice='required'))
     with pytest.raises(CompatibilityError):
         prepared.result(reply)
+
+
+def test_commentary_with_braces_or_fenced_json_extracts_final_object():
+    prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'hi'}], tools=TOOLS))
+    # Braces inside narration before final {"content": ...}
+    reply1 = 'Checking dict {} and {a: 1} in attached file.\n\n{"content":"最终结论"}'
+    msg1, fin1 = prepared.result(reply1)
+    assert fin1 == 'stop' and msg1 == {'role': 'assistant', 'content': '最终结论'}
+    # Narration followed by fenced ```json block
+    reply2 = 'Let me read the file.\n\n```json\n' + json.dumps(CALL) + '\n```'
+    msg2, fin2 = prepared.result(reply2)
+    assert fin2 == 'tool_calls' and msg2['tool_calls'][0]['function']['name'] == 'report_failure'
 
 
 def test_commentary_before_content_json_is_extracted_when_tool_choice_auto():

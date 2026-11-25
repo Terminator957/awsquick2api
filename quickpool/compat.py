@@ -153,17 +153,37 @@ class Prepared:
             try:
                 value = json.loads(stripped)
             except ValueError:
-                # Quick can narrate native attachment reads before client tool/content JSON.
-                start = stripped.find('{')
-                if not self.tools or self.format['type'] != 'text' or start < 1:
+                # Quick can narrate native attachment reads (even with braces or fenced JSON) before the final JSON.
+                if not self.tools or self.format['type'] != 'text':
                     raise
-                value = json.loads(stripped[start:])
-                if not isinstance(value, dict):
+                candidate_text = stripped
+                if candidate_text.endswith('```'):
+                    fence = candidate_text.rfind('```json')
+                    if fence == -1:
+                        fence = candidate_text.rfind('```', 0, len(candidate_text) - 3)
+                    if fence > 0:
+                        inner = candidate_text[fence:].split('\n', 1)[-1].rsplit('```', 1)[0].strip()
+                        candidate_text = candidate_text[:fence] + inner
+                value = None
+                start = -1
+                search_from = 0
+                while True:
+                    pos = candidate_text.find('{', search_from)
+                    if pos < 1:
+                        break
+                    try:
+                        parsed = json.loads(candidate_text[pos:])
+                    except ValueError:
+                        search_from = pos + 1
+                        continue
+                    if isinstance(parsed, dict) and (parsed.get('tool_calls') or isinstance(parsed.get('content'), str)):
+                        value, start = parsed, pos
+                        break
+                    search_from = pos + 1
+                if value is None:
                     raise ValueError
                 if value.get('tool_calls'):
-                    commentary = stripped[:start].strip()
-                elif not isinstance(value.get('content'), str):
-                    raise ValueError
+                    commentary = candidate_text[:start].strip() or None
             if not isinstance(value, dict):
                 raise TypeError
         except (ValueError, TypeError, IndexError):
