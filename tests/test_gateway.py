@@ -157,7 +157,7 @@ def test_auth_and_key_separation(gateway):
     assert client.get("/api/overview").status_code == 401
     assert client.get("/api/config", headers=key).status_code == 401
     assert client.get("/v1/models", headers=admin).status_code == 401
-    assert client.get("/v1/models", headers=key).json()["data"][0]["id"] == "amazon-fast"
+    assert client.get("/v1/models", headers=key).json()["data"][0]["id"] == "claude-opus-5-5"
     assert request(client, key).status_code == 503
     assert not backend.http_calls and not backend.connections
 

@@ -244,11 +244,14 @@ def prepare(body, protocol):
         if thinking.get('type') == 'disabled':
             extra['thinking_effort'] = 'off'
         elif config.get('effort'):
-            extra['thinking_effort'] = {'max': 'high'}.get(config['effort'], config['effort'])
+            extra['thinking_effort'] = {'max': 'high', 'xhigh': 'high', 'none': 'off', 'minimal': 'low'}.get(
+                config['effort'], config['effort'])
         elif thinking.get('type') == 'enabled':
             budget = thinking.get('budget_tokens', 1024)
-            require(isinstance(budget, int) and budget > 0, 'thinking.budget_tokens 无效')
+            require(isinstance(budget, int) and not isinstance(budget, bool) and budget > 0, 'thinking.budget_tokens 无效')
             extra['thinking_effort'] = 'high' if budget >= 16384 else 'medium' if budget >= 8192 else 'low'
+        elif thinking.get('type') == 'adaptive':
+            extra['thinking_effort'] = 'medium'
         if config.get('format'):
             extra['response_format'] = {'type': 'json_schema', 'json_schema': config['format']}
         choice = body.get('tool_choice')

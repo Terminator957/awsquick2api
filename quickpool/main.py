@@ -24,6 +24,7 @@ from .compat import CompatibilityError, Prepared
 from .models import (
     DEFAULT_MODEL,
     MODEL_IDS,
+    PUBLIC_CLAUDE_MODELS,
     AccountCreate,
     AccountPatch,
     BatchAccountAction,
@@ -328,10 +329,10 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
     @app.get("/v1/models", dependencies=[Depends(api_access)])
     async def models():
         return {"object": "list", "data": [{"id": name, "object": "model", "created": 0,
-                    "owned_by": "amazon", "agent_mode": model_options(name)[0],
+                    "owned_by": "anthropic", "agent_mode": model_options(name)[0],
                     "thinking_effort": model_options(name)[1],
                     "thinking_support": 'desktop-normalizes-to-off' if model_options(name)[0] == 'fast' else 'optional'}
-                    for name in MODEL_IDS]}
+                    for name in PUBLIC_CLAUDE_MODELS]}
 
     @app.post("/v1/chat/completions", dependencies=[Depends(api_access)])
     async def completions(value: ChatRequest):

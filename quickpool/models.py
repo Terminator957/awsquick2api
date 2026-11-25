@@ -159,16 +159,56 @@ NATIVE_MODES = ('fast', 'balanced', 'smart')
 
 MODEL_IDS = tuple('amazon-' + mode + suffix for mode in NATIVE_MODES
                   for suffix in ('', '-low', '-medium', '-high'))
+PUBLIC_CLAUDE_MODELS = (
+    'claude-opus-5-5',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
+)
 MODEL_ALIASES = {mode + suffix: 'amazon-' + mode + suffix
                  for mode in NATIVE_MODES for suffix in ('', '-low', '-medium', '-high')}
 MODEL_ALIASES.update({f'{prefix}{mode}-max': f'amazon-{mode}-high'
                       for mode in NATIVE_MODES for prefix in ('', 'amazon-')})
 MODEL_ALIASES.update(opus='amazon-smart', sonnet='amazon-balanced', haiku='amazon-fast')
+_EFFORT_MAP = {
+    'none': 'off', 'off': 'off', 'disabled': 'off',
+    'minimal': 'low', 'low': 'low',
+    'medium': 'medium',
+    'high': 'high', 'xhigh': 'high', 'max': 'high', 'ultra': 'high',
+}
+
+
+def normalize_effort(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        mapped = _EFFORT_MAP.get(value.strip().lower())
+        if mapped is not None:
+            return mapped
+    raise ValueError('thinking/reasoning effort 无效')
+
+
+def budget_to_effort(budget: int) -> str:
+    if budget <= 0:
+        return 'off'
+    return 'high' if budget >= 16384 else 'medium' if budget >= 8192 else 'low'
 
 
 def model_options(model: str):
-    claude = re.fullmatch(r'claude-(?:\d+(?:-\d+)*-)?(opus|sonnet|haiku)(?:-\d+(?:-\d+)*|-latest)?', model)
-    canonical = MODEL_ALIASES.get(claude[1] if claude else model, model)
+    claude = re.fullmatch(
+        r'claude-(?:\d+(?:-\d+)*-)?(opus|sonnet|haiku)(?:-\d+(?:-\d+)*|-latest)?(?:-(off|low|medium|high|max|thinking))?',
+        model,
+    )
+    if claude:
+        mode = MODEL_ALIASES[claude[1]].removeprefix('amazon-')
+        suffix = claude[2]
+        if suffix == 'thinking':
+            effort = 'high'
+        elif suffix:
+            effort = _EFFORT_MAP[suffix]
+        else:
+            effort = 'off'
+        return mode, effort
+    canonical = MODEL_ALIASES.get(model, model)
     if canonical not in MODEL_IDS:
         raise ValueError('未知模型名，请从 GET /v1/models 选择')
     parts = canonical.removeprefix('amazon-').split('-')
@@ -181,7 +221,10 @@ class ChatRequest(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=10000)
     stream: bool = False
     stream_options: dict[str, Any] | None = None
-    reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'max', 'off'] | None = None
+    reasoning_effort: Literal['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'off'] | None = None
+    reasoning: dict[str, Any] | None = None
+    thinking: dict[str, Any] | None = None
+    output_config: dict[str, Any] | None = None
     agent_mode: Literal['fast', 'balanced', 'smart'] | None = None
     thinking_effort: Literal['off', 'low', 'medium', 'high', 'max'] | None = None
     tools: list[dict[str, Any]] | None = Field(default=None, max_length=64)
@@ -195,20 +238,41 @@ class ChatRequest(BaseModel):
     def mode(self):
         return self.agent_mode or model_options(self.model)[0]
 
+    def _explicit_effort(self) -> str | None:
+        if self.thinking_effort is not None:
+            return normalize_effort(self.thinking_effort)
+        if self.reasoning_effort is not None:
+            return normalize_effort(self.reasoning_effort)
+        if isinstance(self.reasoning, dict) and self.reasoning.get('effort') is not None:
+            return normalize_effort(self.reasoning['effort'])
+        if isinstance(self.thinking, dict):
+            kind = self.thinking.get('type')
+            if kind == 'disabled':
+                return 'off'
+            if isinstance(self.output_config, dict) and self.output_config.get('effort') is not None:
+                return normalize_effort(self.output_config['effort'])
+            if kind == 'enabled':
+                budget = self.thinking.get('budget_tokens')
+                if isinstance(budget, int) and not isinstance(budget, bool):
+                    return budget_to_effort(budget)
+                return 'medium'
+            if kind == 'adaptive':
+                return 'medium'
+        if isinstance(self.output_config, dict) and self.output_config.get('effort') is not None:
+            return normalize_effort(self.output_config['effort'])
+        suffix_effort = model_options(self.model)[1]
+        if suffix_effort != 'off' or self.model.endswith('-off'):
+            return suffix_effort
+        return None
+
     @property
     def has_explicit_effort(self) -> bool:
-        return (self.thinking_effort is not None
-                or self.reasoning_effort is not None
-                or model_options(self.model)[1] != 'off')
+        return self._explicit_effort() is not None
 
     @property
     def effort(self):
-        if self.thinking_effort is not None:
-            return {'max': 'high'}.get(self.thinking_effort, self.thinking_effort)
-        if self.reasoning_effort is not None:
-            return {'none': 'off', 'minimal': 'low', 'off': 'off', 'max': 'high'}.get(
-                self.reasoning_effort, self.reasoning_effort)
-        return model_options(self.model)[1]
+        explicit = self._explicit_effort()
+        return explicit if explicit is not None else model_options(self.model)[1]
 
     @model_validator(mode="after")
     def supported(self):

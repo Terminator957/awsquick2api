@@ -77,6 +77,36 @@ def test_claude_messages_stream_preserves_alias_and_thinking(gateway, model, mod
     assert len(backend.connections) == before
 
 
+@pytest.mark.parametrize('extra,expected_effort', [
+    ({'reasoning_effort': 'none'}, 'off'),
+    ({'reasoning_effort': 'minimal'}, 'low'),
+    ({'reasoning_effort': 'low'}, 'low'),
+    ({'reasoning_effort': 'medium'}, 'medium'),
+    ({'reasoning_effort': 'high'}, 'high'),
+    ({'reasoning_effort': 'xhigh'}, 'high'),
+    ({'reasoning_effort': 'max'}, 'high'),
+    ({'reasoning': {'effort': 'low'}}, 'low'),
+    ({'thinking': {'type': 'disabled'}}, 'off'),
+    ({'thinking': {'type': 'enabled', 'budget_tokens': 2048}}, 'low'),
+    ({'thinking': {'type': 'enabled', 'budget_tokens': 10000}}, 'medium'),
+    ({'thinking': {'type': 'enabled', 'budget_tokens': 20000}}, 'high'),
+    ({'thinking': {'type': 'adaptive'}}, 'medium'),
+    ({'thinking': {'type': 'adaptive'}, 'output_config': {'effort': 'low'}}, 'low'),
+    ({'model': 'claude-opus-5-5-low'}, 'low'),
+    ({'model': 'claude-sonnet-4-6-medium'}, 'medium'),
+    ({'model': 'claude-opus-5-5-high'}, 'high'),
+    ({'model': 'claude-opus-5-5-off'}, 'off'),
+])
+def test_chat_completions_maps_client_thinking_depth_variants(gateway, extra, expected_effort):
+    client, _app, _admin, key, backend = gateway
+    add(gateway, state='ready')
+    body = {'model': 'claude-opus-5-5', 'messages': [{'role': 'user', 'content': 'hello'}], **extra}
+    response = client.post('/v1/chat/completions', headers=key, json=body)
+    assert response.status_code == 200, response.text
+    native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type'] == 'user_message')
+    assert native['thinking_effort'] == expected_effort
+
+
 @pytest.mark.parametrize('protocol', ['responses', 'messages'])
 @pytest.mark.parametrize('old', ['amazon-quick', 'amazon-quick-high', 'quick-medium',
                                'amazon-balance', 'amazon-balance-high', 'balance-low', 'hark',

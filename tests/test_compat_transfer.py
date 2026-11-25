@@ -31,11 +31,14 @@ def test_each_model_reaches_native_payload(gateway, model):
 
 def test_models_match_upstream_vocabulary_and_default(gateway):
     client, _app, admin, key, _backend = gateway
-    expected = ['amazon-' + mode + suffix for mode in ('fast', 'balanced', 'smart')
-                for suffix in ('', '-low', '-medium', '-high')]
-    assert [m['id'] for m in client.get('/v1/models', headers=key).json()['data']] == expected
+    expected_public = ['claude-opus-5-5', 'claude-sonnet-4-6', 'claude-haiku-4-5']
+    expected_internal = ['amazon-' + mode + suffix for mode in ('fast', 'balanced', 'smart')
+                         for suffix in ('', '-low', '-medium', '-high')]
+    models_data = client.get('/v1/models', headers=key).json()['data']
+    assert [m['id'] for m in models_data] == expected_public
+    assert all(m['owned_by'] == 'anthropic' for m in models_data)
     config = client.get('/api/config', headers=admin).json()
-    assert config['models'] == expected and config['model'] == 'amazon-fast'
+    assert config['models'] == expected_internal and config['model'] == 'amazon-fast'
     default = ChatRequest(messages=[{'role': 'user', 'content': 'Hello'}])
     assert (default.model, default.mode, default.effort) == ('amazon-fast', 'fast', 'off')
 
