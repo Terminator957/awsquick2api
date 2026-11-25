@@ -26,7 +26,19 @@ function toast(message) {
   box.textContent = message; box.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { box.hidden = true; }, 4000);
 }
-async function copy(value) { try { await navigator.clipboard.writeText(value); toast('已复制'); } catch { toast('剪贴板不可用，请手动复制'); } }
+async function copy(value) {
+  try { await navigator.clipboard.writeText(value); toast('已复制'); return; } catch {}
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', '');
+  area.className = 'clipboard-helper';
+  document.body.append(area);
+  area.select(); area.setSelectionRange(0, value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  area.remove();
+  toast(ok ? '已复制' : '剪贴板不可用，请手动复制');
+}
 async function api(path, options = {}) {
   const response = await fetch(path, {...options, headers: {'Authorization': 'Bearer ' + state.admin,
     ...(options.body ? {'Content-Type': 'application/json'} : {}), ...options.headers}});
@@ -42,7 +54,7 @@ function changePage(page) {
     accounts: ['账号池', '你的账号，各就各位。', '添加、授权并管理独立会话，让请求有序流转。'],
     connect: ['API 接入', '一个入口，连接你的工具。', '使用 OpenAI 兼容接口接入客户端，或在这里直接测试。'],
     logs: ['请求日志', '每次转发，都有记录。', '查看真实调用结果、响应耗时与账号状态。'],
-    keys: ['API 密钥', '为每个客户端分配密钥。', '按账号分组和用量管理 API 访问。'],
+    keys: ['API 密钥', '所有密钥，一处管理。', '主 API Key 与客户端密钥统一管理，按账号分组和用量分配权限。'],
     users: ['用户管理', '按用户，定义访问边界。', '管理 Key 归属、模型与每日用量策略。']};
   if (!labels[page]) return;
   state.page = page;
@@ -348,7 +360,8 @@ function renderKeys() {
       name.append(note);
     }
     const badge = document.createElement('span');
-    const expired = key.expires_at !== null && key.expires_at <= Date.now() / 1000;
+    const expiresAt = Number(key.expires_at) || 0;
+    const expired = expiresAt > 0 && expiresAt <= Date.now() / 1000;
     badge.className = 'status ' + (key.enabled ? (expired ? 'expired' : 'ready') : 'disabled');
     badge.textContent = key.enabled ? (expired ? '已过期' : '已启用') : '已停用';
     const path = '/api/keys/' + encodeURIComponent(key.id);
@@ -361,6 +374,19 @@ function renderKeys() {
         renderKeys();
       }),
       rowButton('编辑', async () => { await loadUsers(); openKeyEditor(key); }),
+      rowButton('轮换', async () => {
+        if (!confirm('轮换会立即废除旧 Key，并生成一个新的 Key。继续？')) return;
+        const body = {name: key.name, notes: key.notes, group_name: key.group_name,
+          user_id: key.user_id || '', daily_limit: key.daily_limit, expires_at: key.expires_at || null};
+        const {plaintext_key, ...created} = await api('/api/keys', {method: 'POST', body: JSON.stringify(body)});
+        let oldDeleted = false;
+        try { await api(path, {method: 'DELETE'}); oldDeleted = true; } catch (error) { toast('新 Key 已生成，旧 Key 删除失败：' + error.message); }
+        if (oldDeleted) state.keys = state.keys.filter(item => item.id !== key.id);
+        state.keys.push(created);
+        renderKeys();
+        text('#plaintext-key', plaintext_key);
+        $('#key-result').showModal();
+      }),
       rowButton('删除', async () => {
         if (!confirm('删除「' + key.name + '」？此密钥将无法再发起请求。')) return;
         await api(path, {method: 'DELETE'});
@@ -369,10 +395,10 @@ function renderKeys() {
         await loadUsers();
       }));
     return tableRow(name, key.key_prefix, key.user_name || '未绑定', key.group_name || '全部账号', key.requests_today + ' · ' + key.requests_total,
-      key.daily_limit === 0 ? '不限' : key.daily_limit, key.expires_at === null ? '永不' : formatTime(key.expires_at), badge, actions);
+      key.daily_limit === 0 ? '不限' : key.daily_limit, expiresAt > 0 ? formatTime(expiresAt) : '永不', badge, actions);
   }));
   $('#keys-empty').hidden = !!state.keys.length;
-  for (const [id, main] of [['#example-key', '主 Key'], ['#log-key', '全部 API Key']]) {
+  for (const [id, main] of [['#example-key', '主 API Key'], ['#log-key', '全部 API Key']]) {
     const select = $(id);
     const value = select.value;
     select.replaceChildren(new Option(main, ''), ...state.keys.map(key => new Option(key.name + ' · ' + key.key_prefix, key.id)));
@@ -408,12 +434,22 @@ function openKeyEditor(key) {
     $('#key-group').value = key.group_name;
     $('#key-user').value = key.user_id || '';
     $('#key-limit').value = key.daily_limit;
-    if (key.expires_at !== null) {
+    $('#key-expiry-at').value = '';
+    if (key.expires_at) {
       const date = new Date(key.expires_at * 1000);
       $('#key-expiry-at').value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
     }
   }
   dialog.showModal();
+}
+
+async function openKeyEditorForUser(user) {
+  await loadUsers();
+  openKeyEditor();
+  $('#key-user').value = user.id;
+  $('#key-name').value = user.name + '-key';
+  text('#key-dialog-title', '为 ' + user.name + ' 创建 API Key');
+  $('#key-name').focus();
 }
 
 function renderUsers() {
@@ -451,6 +487,7 @@ function renderUsers() {
     const path = '/api/users/' + encodeURIComponent(user.id);
     const actions = document.createElement('div'); actions.className = 'key-actions';
     actions.append(
+      rowButton('配 Key', () => openKeyEditorForUser(user)),
       rowButton('编辑', async () => openUserEditor(user)),
       rowButton(user.enabled ? '停用' : '启用', async () => {
         await api(path, {method: 'PATCH', body: JSON.stringify({enabled: !user.enabled})});
@@ -534,7 +571,10 @@ function logRows(requests, showAccount) {
     status.className = 'status ' + (log.status === 200 ? 'ready' : 'expired');
     status.textContent = log.status ?? '—';
     const cells = [request];
-    if (showAccount) cells.push(log.account_name ?? '已删除账号');
+    if (showAccount) {
+      cells.push(log.account_name ?? '已删除账号');
+      cells.push(log.api_key_name ?? (log.api_key_id ? '已删除 Key' : '主 API Key'));
+    }
     cells.push(model, status, log.duration_ms == null ? '—' : (log.duration_ms / 1000).toFixed(2) + 's', log.output_chars ?? '—', log.error || '完成');
     const row = tableRow(...cells);
     row.cells[0].setAttribute('title', log.id ?? '');
@@ -850,6 +890,7 @@ $('#key-form').addEventListener('submit', async event => {
   finally { button.disabled = false; }
 });
 $('#copy-created-key').addEventListener('click', () => copy($('#plaintext-key').textContent));
+$('#clear-key-expiry').addEventListener('click', () => { $('#key-expiry-at').value = ''; });
 $('#key-result').addEventListener('close', () => text('#plaintext-key', ''));
 $('#log-filters').addEventListener('submit', event => { event.preventDefault(); submitLogQuery(); });
 for (const id of ['#log-account', '#log-status', '#log-model', '#log-key']) $(id).addEventListener('change', submitLogQuery);

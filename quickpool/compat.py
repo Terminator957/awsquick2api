@@ -152,14 +152,17 @@ class Prepared:
             try:
                 value = json.loads(stripped)
             except ValueError:
-                # Quick can narrate native attachment reads before client tool JSON.
+                # Quick can narrate native attachment reads before client tool/content JSON.
                 start = stripped.find('{')
                 if not self.tools or self.format['type'] != 'text' or start < 1:
                     raise
                 value = json.loads(stripped[start:])
-                if not isinstance(value, dict) or not value.get('tool_calls'):
+                if not isinstance(value, dict):
                     raise ValueError
-                commentary = stripped[:start].strip()
+                if value.get('tool_calls'):
+                    commentary = stripped[:start].strip()
+                elif not isinstance(value.get('content'), str):
+                    raise ValueError
             if not isinstance(value, dict):
                 raise TypeError
         except (ValueError, TypeError, IndexError):

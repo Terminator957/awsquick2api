@@ -36,7 +36,6 @@ def test_observed_commentary_and_tool_json_reach_messages_client(gateway):
 @pytest.mark.parametrize('reply', [
     'Here is an example {} and then ' + json.dumps(CALL),
     COMMENTARY + '\n' + json.dumps(CALL) + '\nextra trailing text',
-    COMMENTARY + '\n{"content":"no call"}',
     COMMENTARY + '\n' + json.dumps(CALL).replace('report_failure', 'undeclared'),
     COMMENTARY + '\n' + json.dumps(CALL).replace('"head": 73', '"head": "73"'),
 ])
@@ -45,6 +44,19 @@ def test_commentary_does_not_relax_json_or_tool_validation(reply):
                                     tools=TOOLS, tool_choice='required'))
     with pytest.raises(CompatibilityError):
         prepared.result(reply)
+
+
+def test_commentary_before_content_json_is_extracted_when_tool_choice_auto():
+    prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'hi'}], tools=TOOLS))
+    reply = 'Let me read the attached file.\n\n{"content":"你好！我可以帮你处理项目。"}'
+    message, finish = prepared.result(reply)
+    assert finish == 'stop'
+    assert message == {'role': 'assistant', 'content': '你好！我可以帮你处理项目。'}
+    # When tool_choice='required', content JSON without tool_calls is still rejected.
+    req_prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'hi'}],
+                                        tools=TOOLS, tool_choice='required'))
+    with pytest.raises(CompatibilityError):
+        req_prepared.result(reply)
 
 
 def test_explicit_json_format_stays_strict():
