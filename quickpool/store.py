@@ -525,9 +525,30 @@ class Store:
                 "COUNT(*) AS total, SUM(status=200) AS success "
                 "FROM requests r LEFT JOIN api_keys k ON k.id=r.api_key_id"
                 + window + " GROUP BY r.api_key_id ORDER BY total DESC", (start, end))]
+            user_rows = [dict(row) for row in self.db.execute(
+                "SELECT CASE WHEN r.user_id!='' THEN r.user_id WHEN r.api_key_id!='' THEN 'key:' || r.api_key_id ELSE '' END AS group_key, "
+                "CASE WHEN r.user_id!='' THEN COALESCE(u.name, '已删除用户') "
+                "WHEN r.api_key_id!='' THEN COALESCE(k.name, '已删除 Key') ELSE '主 API Key' END AS name, "
+                "COUNT(*) AS total, SUM(r.status=200) AS success, "
+                "COALESCE(SUM(r.input_tokens),0) AS input_tokens, "
+                "COALESCE(SUM(r.output_tokens),0) AS output_tokens, "
+                "COALESCE(SUM(r.input_tokens + r.output_tokens),0) AS tokens "
+                "FROM requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN api_keys k ON k.id=r.api_key_id"
+                + window + " GROUP BY group_key ORDER BY tokens DESC, total DESC", (start, end))]
+        total_user_tokens = sum(row["tokens"] for row in user_rows)
+        users = [{
+            "name": row["name"],
+            "total": row["total"],
+            "success": row["success"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "tokens": row["tokens"],
+            "share_percent": round(100.0 * row["tokens"] / total_user_tokens, 1) if total_user_tokens > 0 else 0.0,
+        } for row in user_rows]
         empty = {"total": 0, "success": 0, "failed": 0, "cache_hits": 0, "avg_ms": 0}
         hourly = [buckets.get(hour, {"hour_ts": hour, **empty}) for hour in range(start, end, 3600)]
-        return {"hours": hours, "hourly": hourly, "models": models, "keys": keys}
+        return {"hours": hours, "hourly": hourly, "models": models, "keys": keys, "users": users,
+                "total_tokens": total_user_tokens}
 
     def account_stats(self, account_id: str):
         with self.lock:

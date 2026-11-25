@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark"><title>QuickPool · Amazon Quick 网关</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/app.css?v=20261125b"><script src="/static/app.js?v=20261125b" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=20261125c"><script src="/static/app.js?v=20261125c" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -42,6 +42,10 @@
             <article class="panel"><h2>近 24 小时请求趋势</h2><div class="chart-legend muted"><span><i class="status-dot green"></i> 成功</span><span><i class="status-dot failed"></i> 失败</span></div><div id="hourly-chart"><p class="muted">暂无数据</p></div></article>
             <article class="panel"><h2>模型调用分布</h2><div id="model-chart"><p class="muted">暂无数据</p></div></article>
           </div>
+          <article class="panel sessions-panel">
+            <div class="code-heading"><h2>近 24 小时用户 Token 消耗占比</h2><span class="muted" id="user-tokens-total">总计 —</span></div>
+            <div id="user-token-chart"><p class="muted">暂无数据</p></div>
+          </article>
           <article class="panel sessions-panel">
             <div class="code-heading"><h2>活跃粘性会话</h2><button class="button compact" id="clear-sessions" disabled>清空全部缓存</button></div>
             <div class="table-wrap" id="sessions-table" hidden><table><thead><tr><th>会话</th><th>账号</th><th>轮次</th><th>剩余时间</th><th>操作</th></tr></thead><tbody id="sessions-body"></tbody></table></div>

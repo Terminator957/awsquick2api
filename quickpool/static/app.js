@@ -19,6 +19,12 @@ function formatTokens(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
   return String(n);
 }
+function formatTokensCN(n) {
+  if (n == null) return '—';
+  if (n >= 1e8) return (n / 1e8).toFixed(2).replace(/\.?0+$/, '') + ' 亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, '') + ' 万';
+  return Math.round(n).toLocaleString();
+}
 function toast(message) {
   const dialog = $('dialog#key-result[open], dialog#key-dialog[open], dialog#user-dialog[open], dialog#detail-dialog[open]');
   const box = $('#toast');
@@ -230,8 +236,13 @@ async function refresh() {
     const pool = result.pool_quota;
     text('#stat-pool-units', pool ? `${pool.total_available_units ?? '—'} / ${pool.total_provisioned_units ?? '—'}` : '—');
     text('#stat-pool-units-note', '分钟/点 · ' + (pool?.accounts_with_quota ?? 0) + ' 个账号有额度数据');
-    text('#stat-pool-tokens', pool?.estimated_remaining_tokens == null ? '—' : '~' + formatTokens(pool.estimated_remaining_tokens));
-    text('#stat-pool-tokens-note', '本地估算' + (pool?.estimate_basis ? ' · ' + pool.estimate_basis : '') + ' · 近24h已用 ' + formatTokens(pool?.tokens_24h) + ' / 累计 ' + formatTokens(pool?.tokens_total));
+    text('#stat-pool-tokens', pool?.estimated_remaining_tokens == null ? '—' : '约 ' + formatTokensCN(pool.estimated_remaining_tokens));
+    const basisText = pool?.estimate_basis === 'observed'
+      ? `按历史实测 ${formatTokensCN(pool.tokens_per_unit)} Token/分钟 × 剩余 ${pool.total_available_units ?? 0} 分钟推算`
+      : `按默认 ${formatTokensCN(pool?.tokens_per_unit ?? 15000)} Token/分钟 × 剩余 ${pool?.total_available_units ?? 0} 分钟推算`;
+    text('#stat-pool-tokens-note', `${basisText} · 近24h ${formatTokensCN(pool?.tokens_24h)} / 累计 ${formatTokensCN(pool?.tokens_total)}`);
+    $('#stat-pool-tokens').closest('.metric').title =
+      '计算方式：全池剩余预计可用 Token = 剩余额度(分钟) × (历史累计估算 Token ÷ 历史已耗额度分钟)。1 亿 = 100M。注意：历史请求为字节启发式估算且含会话复用前发送的上下文，仅供参考。';
     text('#version', 'v' + result.version); text('#connection-label', '服务已连接');
     $('#connection-dot').classList.add('green'); $('#connection-dot').style.removeProperty('background');
     renderAccounts();
@@ -280,7 +291,7 @@ function svgNode(tag, attributes, value) {
   if (value !== undefined) node.textContent = value;
   return node;
 }
-function renderAnalytics({hourly, models}) {
+function renderAnalytics({hourly, models, users = [], total_tokens = 0}) {
   if (hourly.length) {
     const width = 384, height = 112, step = width / hourly.length;
     const max = Math.max(1, ...hourly.map(item => item.success + item.failed));
@@ -304,20 +315,39 @@ function renderAnalytics({hourly, models}) {
     $('#hourly-chart').replaceChildren(chart);
   } else text('#hourly-chart', '暂无数据');
 
-  if (!models.length) { text('#model-chart', '暂无数据'); return; }
-  const max = Math.max(1, ...models.map(item => item.total));
-  $('#model-chart').replaceChildren(...models.map(({model, total, success, avg_ms}) => {
+  if (models.length) {
+    const max = Math.max(1, ...models.map(item => item.total));
+    $('#model-chart').replaceChildren(...models.map(({model, total, success, avg_ms}) => {
+      const item = document.createElement('div');
+      item.className = 'model-distribution';
+      const label = document.createElement('strong');
+      label.textContent = model;
+      const stats = document.createElement('span');
+      stats.className = 'muted';
+      const rate = total ? (100 * success / total).toFixed(1) : '0';
+      const sec = avg_ms ? (avg_ms / 1000).toFixed(2) + 's' : '—';
+      stats.textContent = total + ' 次 · 成功率 ' + rate + '% · 平均 ' + sec;
+      const bar = svgNode('svg', {viewBox: '0 0 100 5', preserveAspectRatio: 'none', 'aria-hidden': 'true'});
+      bar.append(svgNode('rect', {width: 100, height: 5, fill: 'var(--surface-2)'}),
+        svgNode('rect', {width: total / max * 100, height: 5, fill: 'var(--orange)'}));
+      item.append(label, stats, bar);
+      return item;
+    }));
+  } else text('#model-chart', '暂无数据');
+
+  text('#user-tokens-total', total_tokens > 0 ? '总计约 ' + formatTokensCN(total_tokens) + ' Token（' + formatTokens(total_tokens) + '）' : '总计 —');
+  if (!users.length) { text('#user-token-chart', '暂无数据'); return; }
+  $('#user-token-chart').replaceChildren(...users.map(({name, total, tokens, input_tokens, output_tokens, share_percent}) => {
     const item = document.createElement('div');
     item.className = 'model-distribution';
     const label = document.createElement('strong');
-    label.textContent = model;
+    label.textContent = name;
     const stats = document.createElement('span');
     stats.className = 'muted';
-    const rate = total ? (100 * success / total).toFixed(1) : '0';
-    stats.textContent = total + ' 次 · 成功率 ' + rate + '% · 平均 ' + avg_ms + ' ms';
+    stats.textContent = share_percent.toFixed(1) + '% · 约 ' + formatTokensCN(tokens) + ' Token（入 ' + formatTokens(input_tokens) + ' / 出 ' + formatTokens(output_tokens) + '）· ' + total + ' 次请求';
     const bar = svgNode('svg', {viewBox: '0 0 100 5', preserveAspectRatio: 'none', 'aria-hidden': 'true'});
     bar.append(svgNode('rect', {width: 100, height: 5, fill: 'var(--surface-2)'}),
-      svgNode('rect', {width: total / max * 100, height: 5, fill: 'var(--orange)'}));
+      svgNode('rect', {width: Math.max(0, Math.min(100, share_percent)), height: 5, fill: 'var(--green)'}));
     item.append(label, stats, bar);
     return item;
   }));
