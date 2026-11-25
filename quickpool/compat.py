@@ -64,13 +64,16 @@ def image_data(url):
 
 
 class Prepared:
-    def __init__(self, request, *, max_images: int = 50, max_messages: int = 2000, max_context_mb: int = 20):
+    def __init__(self, request, *, max_images: int = 50, max_messages: int = 2000,
+                 max_tools: int = 256, max_context_mb: int = 20):
         self.request = request
         if len(request.messages) > max_messages:
             raise CompatibilityError(f'每次请求最多 {max_messages} 条消息')
         self.images = []
         self.tools = request.tools or ([{'type':'function', 'function':f} for f in request.functions]
                                        if request.functions else [])
+        if len(self.tools) > max_tools:
+            raise CompatibilityError(f'每次请求最多 {max_tools} 个工具')
         self.functions = {t['function']['name']: t['function'] for t in self.tools}
         if len(self.functions) != len(self.tools):
             raise CompatibilityError('函数名不能重复')

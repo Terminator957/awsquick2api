@@ -42,6 +42,7 @@ class SettingsPatch(BaseModel):
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     max_images: int | None = Field(default=None, ge=1, le=500)
     max_messages: int | None = Field(default=None, ge=10, le=10000)
+    max_tools: int | None = Field(default=None, ge=1, le=1000)
     max_body_mb: int | None = Field(default=None, ge=1, le=100)
     smart_default_effort: Literal['off', 'low', 'medium', 'high'] | None = None
 

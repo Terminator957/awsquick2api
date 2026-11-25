@@ -31,8 +31,9 @@ def require(condition, message):
 
 
 class Tools:
-    def __init__(self, definitions, protocol):
-        require(isinstance(definitions, list) and len(definitions) <= 64, 'tools 必须是最多 64 项的数组')
+    def __init__(self, definitions, protocol, *, max_tools: int = 256):
+        require(isinstance(definitions, list) and len(definitions) <= max_tools,
+                f'tools 必须是最多 {max_tools} 项的数组')
         self.chat, self.entries = [], {}
         for tool in definitions:
             require(isinstance(tool, dict), '工具定义无效')
@@ -44,7 +45,7 @@ class Tools:
                     self.add(child, protocol, namespace)
             else:
                 self.add(tool, protocol)
-        require(len(self.chat) <= 64, '展开后工具数不得超过 64')
+        require(len(self.chat) <= max_tools, f'展开后工具数不得超过 {max_tools}')
 
     def add(self, tool, protocol, namespace=None):
         require(isinstance(tool, dict), '工具定义无效')
@@ -211,9 +212,9 @@ def anthropic_input(body):
     return messages
 
 
-def prepare(body, protocol):
+def prepare(body, protocol, *, max_tools: int = 256):
     require(isinstance(body, dict), '请求体必须是 JSON 对象')
-    tools = Tools(body.get('tools', []), protocol)
+    tools = Tools(body.get('tools', []), protocol, max_tools=max_tools)
     extra = {k: body[k] for k in ('model', 'stream', 'parallel_tool_calls') if k in body}
     require(isinstance(body.get('stream', False), bool), 'stream 必须是布尔值')
     if protocol == 'responses':
@@ -467,7 +468,9 @@ def register_cli_routes(app, complete, api_access):
             body = await request.json()
             if count and isinstance(body, dict):
                 body = {**body, 'max_tokens': body.get('max_tokens', 1), 'stream': False}
-            chat, tools = prepare(body, protocol)
+            store = getattr(request.app.state, 'store', None)
+            max_tools = max(1, min(1000, int(store.get_settings().get('max_tools', 256)))) if store else 256
+            chat, tools = prepare(body, protocol, max_tools=max_tools)
         except HTTPException as error:
             return api_error(protocol, error.detail, error.status_code)
         except CompatibilityError as error:

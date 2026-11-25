@@ -28,6 +28,7 @@ _SETTINGS_DEFAULTS = {
     "max_attempts": 3,
     "max_images": 50,
     "max_messages": 2000,
+    "max_tools": 256,
     "max_body_mb": 20,
     "smart_default_effort": "high",
 }

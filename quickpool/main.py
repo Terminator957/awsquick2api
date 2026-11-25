@@ -359,6 +359,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 value,
                 max_images=max(1, min(500, int(settings.get("max_images", 50)))),
                 max_messages=max(10, min(10000, int(settings.get("max_messages", 2000)))),
+                max_tools=max(1, min(1000, int(settings.get("max_tools", 256)))),
                 max_context_mb=max(1, min(100, int(settings.get("max_body_mb", 20)))),
             )
         except CompatibilityError as exc:

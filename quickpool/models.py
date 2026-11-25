@@ -111,6 +111,7 @@ class SettingsPatch(BaseModel):
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     max_images: int | None = Field(default=None, ge=1, le=500)
     max_messages: int | None = Field(default=None, ge=10, le=10000)
+    max_tools: int | None = Field(default=None, ge=1, le=1000)
     max_body_mb: int | None = Field(default=None, ge=1, le=100)
     smart_default_effort: Literal["off", "low", "medium", "high"] | None = None
 
@@ -227,9 +228,9 @@ class ChatRequest(BaseModel):
     output_config: dict[str, Any] | None = None
     agent_mode: Literal['fast', 'balanced', 'smart'] | None = None
     thinking_effort: Literal['off', 'low', 'medium', 'high', 'max'] | None = None
-    tools: list[dict[str, Any]] | None = Field(default=None, max_length=64)
+    tools: list[dict[str, Any]] | None = Field(default=None, max_length=1000)
     tool_choice: str | dict[str, Any] | None = None
-    functions: list[dict[str, Any]] | None = Field(default=None, max_length=64)
+    functions: list[dict[str, Any]] | None = Field(default=None, max_length=1000)
     function_call: str | dict[str, Any] | None = None
     parallel_tool_calls: bool = True
     response_format: dict[str, Any] | None = None

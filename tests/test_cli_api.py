@@ -107,6 +107,27 @@ def test_chat_completions_maps_client_thinking_depth_variants(gateway, extra, ex
     assert native['thinking_effort'] == expected_effort
 
 
+def test_max_tools_setting_allows_more_than_64_tools_and_enforces_configured_limit(gateway):
+    client, _app, admin, key, _backend = gateway
+    add(gateway, state='ready', behavior={'reply': '{"content":"ok"}'})
+    tools_70 = [{'name': f'tool_{i}', 'input_schema': {'type': 'object'}} for i in range(70)]
+    r_ok = client.post('/v1/messages', headers=key, json={
+        'model': 'claude-opus-5-5', 'max_tokens': 100,
+        'messages': [{'role': 'user', 'content': 'hi'}], 'tools': tools_70,
+    })
+    assert r_ok.status_code == 200, r_ok.text
+
+    # Lower max_tools via admin settings API -> 70 tools rejected with clear 400
+    patch = client.patch('/api/settings', headers=admin, json={'max_tools': 50})
+    assert patch.status_code == 200 and patch.json()['max_tools'] == 50
+    r_bad = client.post('/v1/messages', headers=key, json={
+        'model': 'claude-opus-5-5', 'max_tokens': 100,
+        'messages': [{'role': 'user', 'content': 'hi'}], 'tools': tools_70,
+    })
+    assert r_bad.status_code == 400
+    assert '50' in r_bad.text
+
+
 @pytest.mark.parametrize('protocol', ['responses', 'messages'])
 @pytest.mark.parametrize('old', ['amazon-quick', 'amazon-quick-high', 'quick-medium',
                                'amazon-balance', 'amazon-balance-high', 'balance-low', 'hark',
