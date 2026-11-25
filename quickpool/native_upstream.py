@@ -44,9 +44,10 @@ def _can_reuse(thread_id, context, offset):
 
 
 class UpstreamError(Exception):
-    def __init__(self, status: int, message: str, retry_after=60, *, retryable=None):
+    def __init__(self, status: int, message: str, retry_after=60, *, retryable=None, code: str = ''):
         super().__init__(message)
         self.status, self.retry_after = status, retry_after
+        self.code = code
         self.retryable = status in (401, 403, 429, 502, 503, 504) if retryable is None else retryable
 
 
@@ -150,6 +151,8 @@ class Upstream:
                         if err.status == 401 or emitted or not _can_reuse(reuse_thread_id, context, delta_offset):
                             raise
                         self.session_cache.invalidate(reuse_thread_id)
+                        if err.code in ('service_error', 'ThrottlingException', 'rate_limited') or err.status == 429:
+                            raise
                         reuse_thread_id, delta_offset = None, 0
                         continue
                     return
@@ -450,12 +453,18 @@ class Upstream:
                         status = 429 if code in ('ThrottlingException', 'rate_limited') else 502
                         retryable = event.get('retryable', payload.get('retryable'))
                         safe_code = code if isinstance(code, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', code) else ''
+                        source = event.get('source') or payload.get('source') or ''
+                        safe_source = source if isinstance(source, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', source) else ''
+                        raw_msg = event.get('message') or payload.get('message') or payload.get('error') or ''
+                        msg_summary = re.sub(r'\s+', ' ', str(raw_msg))[:160] if isinstance(raw_msg, str) else ''
                         logging.getLogger(__name__).warning(
-                            'quick_error_event transport=%s code=%s retryable=%s emitted=%s elapsed=%.2fs',
-                            session.transport, safe_code or 'unknown', retryable, emitted, time.monotonic() - started_at)
+                            'quick_error_event transport=%s code=%s source=%s retryable=%s emitted=%s reused=%s elapsed=%.2fs msg=%r',
+                            session.transport, safe_code or 'unknown', safe_source or 'unknown', retryable, emitted,
+                            reuse, time.monotonic() - started_at, msg_summary)
                         detail = f'Quick 原生聊天返回错误事件 ({safe_code})' if safe_code else 'Quick 原生聊天返回错误事件'
                         raise UpstreamError(status, detail,
-                                            retryable=retryable if isinstance(retryable, bool) else None)
+                                            retryable=retryable if isinstance(retryable, bool) else None,
+                                            code=safe_code)
                     update = text.feed(event)
                     if update.delta:
                         emitted = True

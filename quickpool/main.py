@@ -12,9 +12,10 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import ClientDisconnect
 
 from . import __version__
 from .admin_api import handle_batch_action, register_admin_routes
@@ -99,11 +100,14 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         limit = max_body_mb * 1024 * 1024
         total = 0
         chunks = []
-        async for chunk in request.stream():
-            total += len(chunk)
-            if total > limit:
-                return JSONResponse({"error": {"message": f"请求体超过 {max_body_mb} MiB", "type": "invalid_request_error"}}, 413)
-            chunks.append(chunk)
+        try:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > limit:
+                    return JSONResponse({"error": {"message": f"请求体超过 {max_body_mb} MiB", "type": "invalid_request_error"}}, 413)
+                chunks.append(chunk)
+        except ClientDisconnect:
+            return Response(status_code=499)
         request._body = b"".join(chunks)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
