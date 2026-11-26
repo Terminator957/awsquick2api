@@ -140,7 +140,7 @@ class Message(BaseModel):
         if self.content is None and not (self.role == 'assistant' and (self.tool_calls or self.function_call)):
             raise ValueError('消息必须含 content，或 assistant.tool_calls')
         if isinstance(self.content, list):
-            if len(self.content) > 32:
+            if len(self.content) > 256:
                 raise ValueError('消息内容分段过多')
             for part in self.content:
                 if part.get('type') == 'text':
@@ -199,9 +199,11 @@ def budget_to_effort(budget: int) -> str:
 
 
 def model_options(model: str):
+    normalized = re.sub(r'\[[0-9]+[kmKM]\]$', '', model.strip())
+    normalized = re.sub(r'^(?:(?:us|eu|ap|global)\.)?anthropic\.', '', normalized)
     claude = re.fullmatch(
         r'claude-(?:\d+(?:-\d+)*-)?(opus|sonnet|haiku)(?:-\d+(?:-\d+)*|-latest)?(?:-(off|low|medium|high|max|thinking))?',
-        model,
+        normalized,
     )
     if claude:
         mode = MODEL_ALIASES[claude[1]].removeprefix('amazon-')
@@ -213,7 +215,7 @@ def model_options(model: str):
         else:
             effort = 'off'
         return mode, effort
-    canonical = MODEL_ALIASES.get(model, model)
+    canonical = MODEL_ALIASES.get(normalized, normalized)
     if canonical not in MODEL_IDS:
         raise ValueError('未知模型名，请从 GET /v1/models 选择')
     parts = canonical.removeprefix('amazon-').split('-')

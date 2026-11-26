@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 import uuid
@@ -475,8 +476,16 @@ def register_cli_routes(app, complete, api_access):
             return api_error(protocol, error.detail, error.status_code)
         except CompatibilityError as error:
             return api_error(protocol, str(error))
-        except (ValidationError, ValueError, TypeError, KeyError, RecursionError):
+        except (ValidationError, ValueError, TypeError, KeyError, RecursionError) as error:
             # Do not echo raw CLI prompts, tool arguments, tokens or Pydantic input values.
+            model_name = body.get('model') if isinstance(locals().get('body'), dict) else None
+            if isinstance(error, ValidationError):
+                summary = [(e.get('loc'), e.get('type'), e.get('msg')) for e in error.errors()[:5]]
+            else:
+                summary = str(error)[:160]
+            logging.getLogger(__name__).warning(
+                'cli_prepare_rejected protocol=%s model=%r err=%s summary=%r',
+                protocol, model_name, type(error).__name__, summary)
             return api_error(protocol, '请求格式或模型不支持；请检查消息、工具类型和模型名（/v1/models）')
         headers = {'X-QuickPool-Usage': 'estimated' if protocol == 'messages' else 'unavailable',
                    'X-QuickPool-State': 'stateless', 'X-Accel-Buffering': 'no'}
