@@ -240,6 +240,7 @@ class ChatRequest(BaseModel):
     function_call: str | dict[str, Any] | None = None
     parallel_tool_calls: bool = True
     response_format: dict[str, Any] | None = None
+    web_search_enabled: bool = False
 
     @property
     def mode(self):

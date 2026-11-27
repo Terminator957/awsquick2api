@@ -408,6 +408,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 delta_offset=delta_offset if use_reuse else 0,
                 state_out=stream_state,
                 stream_timeout_sec=stream_timeout_sec,
+                web_search_enabled=value.web_search_enabled,
             )
             try:
                 first = await anext(iterator)

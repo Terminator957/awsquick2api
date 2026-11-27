@@ -36,6 +36,7 @@ class Tools:
         require(isinstance(definitions, list) and len(definitions) <= max_tools,
                 f'tools 必须是最多 {max_tools} 项的数组')
         self.chat, self.entries = [], {}
+        self.web_search_enabled = False
         for tool in definitions:
             require(isinstance(tool, dict), '工具定义无效')
             if protocol == 'responses' and tool.get('type') == 'namespace':
@@ -53,7 +54,13 @@ class Tools:
         kind = tool.get('type', 'function' if protocol == 'responses' else 'custom')
         custom = protocol == 'responses' and kind == 'custom'
         if protocol == 'messages':
-            require(kind == 'custom', '仅支持客户端执行的自定义工具，不支持 Anthropic 服务端工具')
+            if kind != 'custom':
+                kind_s = str(kind or '').lower()
+                name_s = str(tool.get('name') or '').lower()
+                if 'web_search' in kind_s or 'web_search' in name_s:
+                    self.web_search_enabled = True
+                # Skip Anthropic server-side tools so desktop clients aren't blocked by 400.
+                return
         else:
             require(kind in ('function', 'custom'), '仅支持 function/custom 客户端工具')
         name = tool.get('name')
@@ -260,7 +267,8 @@ def prepare(body, protocol, *, max_tools: int = 256):
         if isinstance(choice, dict) and choice.get('disable_parallel_tool_use'):
             extra['parallel_tool_calls'] = False
     extra.update(messages=messages, tools=tools.chat or None,
-                 tool_choice=tools.choice(body.get('tool_choice'), protocol))
+                 tool_choice=tools.choice(body.get('tool_choice'), protocol),
+                 web_search_enabled=tools.web_search_enabled)
     return ChatRequest.model_validate(extra), tools
 
 

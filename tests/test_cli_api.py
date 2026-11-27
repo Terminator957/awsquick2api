@@ -128,6 +128,25 @@ def test_max_tools_setting_allows_more_than_64_tools_and_enforces_configured_lim
     assert '50' in r_bad.text
 
 
+def test_anthropic_server_tools_skipped_and_web_search_bridged(gateway):
+    client, _app, _admin, key, backend = gateway
+    add(gateway, state='ready', behavior={'reply': '{"content":"searched"}'})
+    resp = client.post('/v1/messages', headers=key, json={
+        'model': 'claude-opus-5-5', 'max_tokens': 100,
+        'messages': [{'role': 'user', 'content': 'latest news'}],
+        'tools': [
+            {'type': 'web_search_20250305', 'name': 'web_search', 'max_uses': 5},
+            {'type': 'tool_search_tool_regex_20251119', 'name': 'tool_search_tool_regex'},
+            {'name': 'read_file', 'input_schema': {'type': 'object', 'properties': {'path': {'type': 'string'}}}},
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+    native = next(m['payload'] for m in backend.connections[-1]['socket'].sent if m['type'] == 'user_message')
+    assert native['web_search_enabled'] is True
+    assert 'read_file' in native['text']
+    assert 'web_search_20250305' not in native['text']
+
+
 @pytest.mark.parametrize('protocol', ['responses', 'messages'])
 @pytest.mark.parametrize('old', ['amazon-quick', 'amazon-quick-high', 'quick-medium',
                                'amazon-balance', 'amazon-balance-high', 'balance-low', 'hark',
