@@ -291,14 +291,26 @@ function svgNode(tag, attributes, value) {
   if (value !== undefined) node.textContent = value;
   return node;
 }
-function renderAnalytics({hourly, models, users = [], total_tokens = 0}) {
+function analyticsRangeLabel(hours) {
+  const map = {24: '近 24 小时', 72: '近 3 天', 168: '近 7 天', 360: '近 15 天', 720: '近 30 天'};
+  return map[Number(hours)] || ('近 ' + hours + ' 小时');
+}
+function renderAnalytics({hours = 24, bucket_sec = 3600, hourly, models, users = [], total_tokens = 0}) {
+  const rangeLabel = analyticsRangeLabel(hours);
+  text('#hourly-title', rangeLabel + '请求趋势');
+  text('#user-tokens-title', rangeLabel + '用户 Token 消耗占比');
   if (hourly.length) {
     const width = 384, height = 112, step = width / hourly.length;
     const max = Math.max(1, ...hourly.map(item => item.success + item.failed));
-    const chart = svgNode('svg', {viewBox: '0 0 384 134', role: 'group', 'aria-label': '每小时请求数'});
+    const chart = svgNode('svg', {viewBox: '0 0 384 134', role: 'group', 'aria-label': rangeLabel + '请求数'});
     chart.append(svgNode('line', {x1: 0, x2: width, y1: height, y2: height, stroke: 'var(--border)'}));
     hourly.forEach(({hour_ts, success, failed, cache_hits}, i) => {
-      const label = String(new Date(hour_ts * 1000).getHours()).padStart(2, '0') + ':00';
+      const dt = new Date(hour_ts * 1000);
+      const label = bucket_sec >= 86400
+        ? (dt.getMonth() + 1) + '/' + dt.getDate()
+        : bucket_sec > 3600
+          ? (dt.getMonth() + 1) + '/' + dt.getDate() + ' ' + String(dt.getHours()).padStart(2, '0') + 'h'
+          : String(dt.getHours()).padStart(2, '0') + ':00';
       const tooltip = label + ' · 成功 ' + success + ' · 失败 ' + failed + ' · 命中缓存 ' + cache_hits;
       const group = svgNode('g', {role: 'img', 'aria-label': tooltip, tabindex: 0});
       const good = height * success / max, bad = height * failed / max;
@@ -352,7 +364,10 @@ function renderAnalytics({hourly, models, users = [], total_tokens = 0}) {
     return item;
   }));
 }
-async function loadAnalytics() { renderAnalytics(await api('/api/analytics?hours=24')); }
+async function loadAnalytics() {
+  const hours = Number($('#analytics-hours')?.value || 24);
+  renderAnalytics(await api('/api/analytics?hours=' + encodeURIComponent(hours)));
+}
 async function loadSessions() {
   const {sessions} = await api('/api/sessions');
   $('#sessions-body').replaceChildren(...sessions.map(({thread_id, account_name, turns, remaining_sec}) => {
@@ -642,7 +657,7 @@ function submitLogQuery() {
   clearTimeout(logQueryTimer);
   logQueryTimer = setTimeout(() => {
     logFilters = new URLSearchParams();
-    for (const [name, selector] of Object.entries({account_id: '#log-account', status: '#log-status', model: '#log-model', api_key_id: '#log-key', q: '#log-query'})) {
+    for (const [name, selector] of Object.entries({hours: '#log-hours', account_id: '#log-account', status: '#log-status', model: '#log-model', api_key_id: '#log-key', q: '#log-query'})) {
       const value = $(selector).value.trim();
       if (value) logFilters.set(name, value);
     }
@@ -929,8 +944,9 @@ $('#key-form').addEventListener('submit', async event => {
 $('#copy-created-key').addEventListener('click', () => copy($('#plaintext-key').textContent));
 $('#clear-key-expiry').addEventListener('click', () => { $('#key-expiry-at').value = ''; });
 $('#key-result').addEventListener('close', () => text('#plaintext-key', ''));
+$('#analytics-hours').addEventListener('change', () => loadAnalytics().catch(error => toast(error.message)));
 $('#log-filters').addEventListener('submit', event => { event.preventDefault(); submitLogQuery(); });
-for (const id of ['#log-account', '#log-status', '#log-model', '#log-key']) $(id).addEventListener('change', submitLogQuery);
+for (const id of ['#log-hours', '#log-account', '#log-status', '#log-model', '#log-key']) $(id).addEventListener('change', submitLogQuery);
 for (const id of ['#log-prev', '#log-next']) $(id).addEventListener('click', event => {
   logOffset = Number(event.currentTarget.dataset.offset);
   loadLogs().catch(error => toast(error.message));

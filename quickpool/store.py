@@ -459,7 +459,7 @@ class Store:
                             "ORDER BY created_at DESC LIMIT -1 OFFSET ?)", (retention,))
 
     @staticmethod
-    def _logs_where(account_id, status, model, api_key_id, q):
+    def _logs_where(account_id, status, model, api_key_id, q, hours=0):
         clauses, params = [], []
         if account_id:
             clauses.append("r.account_id=?")
@@ -480,12 +480,15 @@ class Store:
         if q:
             clauses.append("(r.id LIKE ? OR r.error LIKE ?)")
             params.extend((f"%{q}%", f"%{q}%"))
+        if hours and hours > 0:
+            clauses.append("r.created_at>=?")
+            params.append(time.time() - hours * 3600)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         return where, params
 
     def logs(self, limit=100, *, offset=0, account_id: str | None = None, status: str | None = None,
-             model: str | None = None, api_key_id: str | None = None, q: str | None = None):
-        where, params = self._logs_where(account_id, status, model, api_key_id, q)
+             model: str | None = None, api_key_id: str | None = None, q: str | None = None, hours: int = 0):
+        where, params = self._logs_where(account_id, status, model, api_key_id, q, hours=hours)
         with self.lock:
             rows = self.db.execute(
                 "SELECT r.*,a.name AS account_name,k.name AS api_key_name FROM requests r "
@@ -499,22 +502,23 @@ class Store:
         return result
 
     def logs_page(self, limit=50, *, offset=0, account_id: str | None = None, status: str | None = None,
-                  model: str | None = None, api_key_id: str | None = None, q: str | None = None):
-        where, params = self._logs_where(account_id, status, model, api_key_id, q)
+                  model: str | None = None, api_key_id: str | None = None, q: str | None = None, hours: int = 0):
+        where, params = self._logs_where(account_id, status, model, api_key_id, q, hours=hours)
         with self.lock:
             requests = self.logs(limit, offset=offset, account_id=account_id, status=status, model=model,
-                                 api_key_id=api_key_id, q=q)
+                                 api_key_id=api_key_id, q=q, hours=hours)
             total = self.db.execute("SELECT COUNT(*) FROM requests r" + where, params).fetchone()[0]
         return {"requests": requests, "total": total, "limit": limit, "offset": offset}
 
     def analytics(self, hours=24):
-        end = (int(time.time() // 3600) + 1) * 3600
-        start = end - hours * 3600
+        bucket_sec = 86400 if hours >= 168 else 10800 if hours > 24 else 3600
+        end = (int(time.time() // bucket_sec) + 1) * bucket_sec
+        start = end - max(bucket_sec, hours * 3600)
         window = " WHERE r.created_at>=? AND r.created_at<?"
         avg_ms = "COALESCE(AVG(CASE WHEN status=200 THEN duration_ms END),0) AS avg_ms"
         with self.lock:
             buckets = {row["hour_ts"]: dict(row) for row in self.db.execute(
-                "SELECT CAST(created_at / 3600 AS INTEGER) * 3600 AS hour_ts, COUNT(*) AS total, "
+                f"SELECT CAST(created_at / {bucket_sec} AS INTEGER) * {bucket_sec} AS hour_ts, COUNT(*) AS total, "
                 "SUM(status=200) AS success, SUM(status!=200) AS failed, SUM(session_hit=1) AS cache_hits, "
                 + avg_ms + " FROM requests r" + window + " GROUP BY hour_ts", (start, end))}
             models = [dict(row) for row in self.db.execute(
@@ -546,9 +550,9 @@ class Store:
             "share_percent": round(100.0 * row["tokens"] / total_user_tokens, 1) if total_user_tokens > 0 else 0.0,
         } for row in user_rows]
         empty = {"total": 0, "success": 0, "failed": 0, "cache_hits": 0, "avg_ms": 0}
-        hourly = [buckets.get(hour, {"hour_ts": hour, **empty}) for hour in range(start, end, 3600)]
-        return {"hours": hours, "hourly": hourly, "models": models, "keys": keys, "users": users,
-                "total_tokens": total_user_tokens}
+        hourly = [buckets.get(hour, {"hour_ts": hour, **empty}) for hour in range(start, end, bucket_sec)]
+        return {"hours": hours, "bucket_sec": bucket_sec, "hourly": hourly, "models": models, "keys": keys,
+                "users": users, "total_tokens": total_user_tokens}
 
     def account_stats(self, account_id: str):
         with self.lock:

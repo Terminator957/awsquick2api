@@ -107,7 +107,7 @@ def register_admin_routes(app, admin):
         return result
 
     @router.get('/analytics')
-    async def analytics(hours: int = Query(default=24, ge=1, le=168)):
+    async def analytics(hours: int = Query(default=24, ge=1, le=720)):
         return app.state.store.analytics(hours=hours)
 
     @router.get('/sessions')
@@ -127,9 +127,12 @@ def register_admin_routes(app, admin):
 
     @router.get('/logs/export')
     async def export_logs(account_id: str = '', status: str = '', model: str = '',
-                          api_key_id: str = '', q: str = ''):
+                          api_key_id: str = '', q: str = '', hours: int = 0):
         filters = dict(account_id=account_id, status=status, model=model, api_key_id=api_key_id, q=q)
-        logs = app.state.store.logs(limit=5000, **{key: value for key, value in filters.items() if value})
+        kwargs = {key: value for key, value in filters.items() if value}
+        if hours > 0:
+            kwargs['hours'] = min(hours, 720)
+        logs = app.state.store.logs(limit=5000, **kwargs)
         rows = logs['requests'] if isinstance(logs, dict) else logs
         columns = ('created_at', 'id', 'account_id', 'account_name', 'api_key_id', 'model', 'thinking_effort', 'status',
                    'duration_ms', 'output_chars', 'session_hit', 'error')

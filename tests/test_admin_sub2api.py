@@ -178,7 +178,8 @@ def test_settings_and_analytics(admin_gateway, monkeypatch):
     path = '/api/analytics'
     assert client.get(path, headers=admin).json() == {'hours': 24}
     assert client.get(path, headers=admin, params={'hours': 168}).json() == {'hours': 168}
-    for hours in (0, 169):
+    assert client.get(path, headers=admin, params={'hours': 720}).json() == {'hours': 720}
+    for hours in (0, 721):
         assert client.get(path, headers=admin, params={'hours': hours}).status_code == 422
 
 

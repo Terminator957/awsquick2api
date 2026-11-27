@@ -328,13 +328,15 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
 
     @app.get("/api/logs", dependencies=[Depends(admin)])
     async def logs(account_id: str | None = None, status: str | None = None, model: str | None = None,
-                   api_key_id: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0):
+                   api_key_id: str | None = None, q: str | None = None, hours: int = 0, limit: int = 50, offset: int = 0):
         bounded = max(1, min(limit, 200))
         safe_offset = max(0, offset)
+        bounded_hours = max(0, min(hours, 720))
         return app.state.store.logs_page(
             limit=bounded, offset=safe_offset,
             account_id=account_id or None, status=status or None,
             model=model or None, api_key_id=api_key_id or None, q=q or None,
+            hours=bounded_hours,
         )
 
     @app.get("/v1/models", dependencies=[Depends(api_access)])
