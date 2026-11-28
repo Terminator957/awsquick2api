@@ -42,21 +42,6 @@ def test_prepared_parses_tool_call_xml_blocks():
     assert json.loads(msg['tool_calls'][0]['function']['arguments']) == {'file_path': 'quickpool/compat.py'}
 
 
-def test_prepared_allows_plain_markdown_text_when_tool_choice_auto():
-    req = ChatRequest(
-        model='amazon-smart',
-        messages=[{'role': 'user', 'content': 'explain this'}],
-        tools=[{'type': 'function', 'function': {
-            'name': 'Read', 'parameters': {'type': 'object', 'properties': {'file_path': {'type': 'string'}}},
-        }}],
-    )
-    prep = Prepared(req)
-    md = '## 排查结论\n\n原因如下：\n```python\nprint("ok")\n```'
-    msg, finish = prep.result(md)
-    assert finish == 'stop'
-    assert msg == {'role': 'assistant', 'content': md}
-
-
 def test_build_user_message_passes_chat_agent_id():
     msg = build_user_message('hi', 't-1', chat_agent_id='agent-123')
     assert msg['payload']['chat_agent_id'] == 'agent-123'
@@ -77,18 +62,18 @@ def test_settings_and_account_agent_select_api(gateway):
     assert res.status_code == 201
     aid = res.json()['id']
 
-    # Default settings include auto_ensure_coding_agent=True
+    # Default settings include auto_ensure_coding_agent=False (opt-in)
     s = client.get('/api/settings', headers=admin).json()
-    assert s['auto_ensure_coding_agent'] is True
+    assert s['auto_ensure_coding_agent'] is False
     assert s['custom_agent_prompt'] == ''
 
     # Update custom agent settings
     patched = client.patch('/api/settings', headers=admin, json={
-        'auto_ensure_coding_agent': False,
+        'auto_ensure_coding_agent': True,
         'custom_agent_prompt': 'Custom coding prompt',
     })
     assert patched.status_code == 200
-    assert patched.json()['auto_ensure_coding_agent'] is False
+    assert patched.json()['auto_ensure_coding_agent'] is True
     assert patched.json()['custom_agent_prompt'] == 'Custom coding prompt'
 
     # Select & clear custom agent on account

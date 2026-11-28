@@ -385,7 +385,7 @@ async function loadSessions() {
   $('#sessions-empty').hidden = !!sessions.length;
   $('#clear-sessions').disabled = !sessions.length;
 }
-function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off', auto_ensure_coding_agent = true, custom_agent_prompt = ''}) {
+function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off', auto_ensure_coding_agent = false, custom_agent_prompt = ''}) {
   $('#scheduling-strategy').value = scheduling_strategy;
   $('#session-cache-ttl').value = session_cache_ttl;
   $('#max-attempts').value = max_attempts;

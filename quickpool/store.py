@@ -35,7 +35,7 @@ _SETTINGS_DEFAULTS = {
     "log_retention": 10000,
     "smart_default_effort": "high",
     "client_restriction": "off",
-    "auto_ensure_coding_agent": True,
+    "auto_ensure_coding_agent": False,
     "custom_agent_prompt": "",
 }
 

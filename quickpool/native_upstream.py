@@ -363,7 +363,7 @@ class Upstream:
         chat_agent_id = (account.get('chat_agent_id') or '').strip() or None
         if not chat_agent_id and self.connect is websocket_connect and self.http_transport is None:
             settings = self.store.get_settings()
-            if settings.get('auto_ensure_coding_agent', True) and self._agent_ensure_failed.get(account['id'], 0) < time.monotonic():
+            if settings.get('auto_ensure_coding_agent', False) and self._agent_ensure_failed.get(account['id'], 0) < time.monotonic():
                 try:
                     ensured = await self.ensure_coding_agent(
                         account['id'], custom_prompt=str(settings.get('custom_agent_prompt') or ''),

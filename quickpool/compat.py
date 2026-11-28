@@ -251,12 +251,6 @@ class Prepared:
                         break
                     search_from = pos + 1
                 if value is None:
-                    # When tools are optional (auto/none) and response_format is text, a normal Markdown answer
-                    # without JSON wrapping is valid text unless it is a refusal or malformed tool_calls attempt.
-                    if (self.tools and self.choice in ('auto', 'none') and self.format['type'] == 'text'
-                            and stripped and not _REFUSAL_RE.search(stripped)
-                            and '"tool_calls"' not in stripped and '<tool_call>' not in stripped.lower()):
-                        return {'role': 'assistant', 'content': text}, 'stop'
                     raise ValueError
                 if value.get('tool_calls'):
                     commentary = candidate_text[:start].strip() or None

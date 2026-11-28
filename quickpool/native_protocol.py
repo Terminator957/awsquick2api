@@ -243,8 +243,7 @@ class NativeMessageDecoder:
 
 def _client_fields(surface: str, outpost_id: str, app_version: str | None) -> dict[str, Any]:
     fields = {"surfaceType": surface, "acp_first_text": 1, "user_notification": 1,
-              "subtask_progress": 1, "external_agent_sign_in": 1, "recents_promotion": 1,
-              "self_registering_connectors": 1}
+              "subtask_progress": 1, "external_agent_sign_in": 1, "recents_promotion": 1}
     if outpost_id:
         fields["outpostId"] = outpost_id
     if app_version:
