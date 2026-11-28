@@ -522,7 +522,7 @@ class Upstream:
         return data
 
     @staticmethod
-    def _build_custom_prompt(context, *, has_custom_agent: bool = False) -> str | None:
+    def _build_custom_prompt(context, *, has_custom_agent: bool = False, agent_mode: str = 'smart') -> str | None:
         """Build native AWS Quick custom_prompt carrying system instructions and <tool_call> schemas."""
         if not isinstance(context, dict):
             return None
@@ -569,12 +569,20 @@ class Upstream:
             else:
                 choice_rule = "When a tool above fits the user's request, emit the corresponding `<tool_call>` block; otherwise reply in plain text."
             heading = '## Client Tools (JSON Schema)' if has_custom_agent else '## Tool Schemas (JSON)'
+            local_priority = (
+                "IMPORTANT: For listing, searching, reading, creating, or editing local files/directories and running shell commands, "
+                "ALWAYS emit a matching `<tool_call>` block from the schemas above so the caller executes it on the user's machine; "
+                "NEVER use built-in cloud workspace/search tools when a matching client tool exists."
+                if (agent_mode == 'fast' or choice != 'auto') else
+                "For file, shell, and workspace actions, emit matching `<tool_call>` blocks from the schemas above — "
+                "the user's local project files, directories, and shell run on their machine and are accessed directly through these client tools."
+            )
             parts.append('\n'.join([
                 heading,
                 'The caller executes `<tool_call>` JSON blocks locally and returns results on the next turn.',
                 serialized,
                 choice_rule,
-                "For file, shell, and workspace actions, emit matching `<tool_call>` blocks from the schemas above — the user's local project files, directories, and shell run on their machine and are accessed directly through these client tools.",
+                local_priority,
                 'Format (raw tags, no markdown fences; stop immediately after the block(s)):',
                 '<tool_call>{"name":"<tool_name>","arguments":{...}}</tool_call>',
             ]))
@@ -700,7 +708,7 @@ class Upstream:
             if isinstance(context, dict) and (context.get('tools') or any(
                 isinstance(m, dict) and m.get('role') in ('system', 'developer') for m in (context.get('messages') or [])
             )):
-                custom_prompt = self._build_custom_prompt(context, has_custom_agent=bool(chat_agent_id))
+                custom_prompt = self._build_custom_prompt(context, has_custom_agent=bool(chat_agent_id), agent_mode=agent_mode)
                 if not reuse:
                     # Keep user message text clean (only non-system conversation turns) when custom_prompt carries system+tools.
                     conv_only = [m for m in (context.get('messages') or []) if isinstance(m, dict) and m.get('role') not in ('system', 'developer')]
@@ -712,6 +720,13 @@ class Upstream:
                                                              else json.dumps(m, ensure_ascii=False, separators=(',', ':')))
                             for m in conv_only
                         )
+                choice = context.get('tool_choice', 'auto')
+                if isinstance(choice, dict):
+                    forced_name = (choice.get('function') or choice).get('name', '')
+                    if forced_name:
+                        prompt = f'{prompt}\n\n[Use `<tool_call>` to invoke `{forced_name}` now.]'
+                elif choice == 'required':
+                    prompt = f'{prompt}\n\n[Use `<tool_call>` to invoke a required tool now.]'
             def user_message(text):
                 return build_user_message(text, thread_id, agent_mode=agent_mode, thinking_effort=thinking_effort,
                     attachments=attachments, outpost_id=session.outpost_id, app_version=CLIENT_VERSION,
