@@ -284,12 +284,14 @@ async def test_large_delta_offloads_only_incremental_messages(native, conversati
                 reuse_thread_id='reused', delta_offset=3)]
     assert result == ['OK']
     [(thread, [document])] = native.uploads
-    assert thread == 'reused' and document['name'] == 'api-context.json'
-    assert json.loads(document['data']) == {**conversation, 'messages': conversation['messages'][3:]}
+    assert thread == 'reused' and document['name'] == 'conversation-context.txt'
+    doc_txt = document['data'].decode('utf-8')
+    assert 'NEW_USER_QUESTION' in doc_txt and 'SECOND_TOOL_RESULT' in doc_txt
+    assert 'OLD_USER_QUESTION' not in doc_txt
     [socket] = native.connections
     payload = socket.sent[-1]['payload']
     assert socket.wire_bytes <= 60_000
-    assert payload['attachments'][0]['name'] == 'api-context.json'
+    assert payload['attachments'][0]['name'] == 'conversation-context.txt'
     assert 'NEW_USER_QUESTION' in payload['text'] and 'SECOND_TOOL_RESULT' in payload['text']
     for omitted in ('OLD_SYSTEM_RULE', 'OLD_USER_QUESTION', 'OLD_ASSISTANT_REPLY', 'DELTA_SYSTEM_RULE',
                     'TOOL_SCHEMA_MARKER'):

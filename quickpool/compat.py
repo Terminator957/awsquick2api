@@ -66,6 +66,8 @@ _IDENTITY_PATTERNS = (
     (re.compile(
         r'(^|\n)你是[^\n。]{1,28}(?:研发|开发|打造|推出)的[^\n。]{0,28}(?:代理|助手|智能体|工具)[^\n。]*。?',
     ), r'\1你正在协助开发者在本地代码仓库中完成软件工程任务。'),
+    (re.compile(r'\bClaude Code\b', re.IGNORECASE), 'the coding client'),
+    (re.compile(r"\bAnthropic's official CLI\b", re.IGNORECASE), 'the local coding CLI'),
 )
 
 

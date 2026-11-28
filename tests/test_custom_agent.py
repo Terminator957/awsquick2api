@@ -67,6 +67,56 @@ def test_session_cache_isolates_scope_and_system_only_prefix():
     assert cache.match(follow, 'smart', 'high', scope='k1')[0].thread_id == 't-k1'
 
 
+def test_render_context_txt_is_plain_text_without_api_wrapper():
+    from quickpool.native_upstream import Upstream
+
+    payload = {
+        'messages': [
+            {'role': 'system', 'content': 'Work cleanly.'},
+            {'role': 'user', 'content': 'Check status'},
+        ],
+        'tools': [{'type': 'function', 'function': {'name': 'Read', 'description': 'Read file', 'parameters': {'type': 'object'}}}],
+    }
+    txt = Upstream._render_context_txt(payload).decode('utf-8')
+    assert '=== Workspace Instructions ===' in txt
+    assert '=== Conversation History ===' in txt
+    assert 'api-context.json' not in txt
+    assert 'API request' not in txt
+
+
+async def test_warm_ws_pool_park_checkout_and_invalidate():
+    from quickpool.ws_pool import WarmWsPool
+
+    class FakeSocket:
+        close_code = None
+        def __init__(self):
+            self.closed = False
+            self.sent = []
+        async def send(self, data):
+            self.sent.append(data)
+        async def close(self):
+            self.closed = True
+            self.close_code = 1000
+
+    class FakeSession:
+        transport = 'aidp'
+
+    pool = WarmWsPool(max_sockets=4, idle_ttl=60.0, ping_interval=0)
+    s1 = FakeSocket()
+    await pool.park('t-1', 'acc-1', s1, object(), FakeSession())
+    assert pool.has('t-1')
+    assert 't-1' in pool.thread_ids()
+    # Exclusive checkout pops socket from pool
+    checked = await pool.checkout('t-1', 'acc-1')
+    assert checked is not None and checked.socket is s1
+    assert not pool.has('t-1')
+    # Re-park and invalidate account closes socket
+    await pool.park('t-1', 'acc-1', s1, object(), FakeSession())
+    await pool.invalidate_account('acc-1')
+    assert s1.closed
+    assert not pool.has('t-1')
+
+
 def test_normalize_agent_id():
     assert normalize_agent_id('arn:aws:quicksight:us-east-1:123:agent/abc-456') == 'abc-456'
     assert normalize_agent_id('  abc-456  ') == 'abc-456'

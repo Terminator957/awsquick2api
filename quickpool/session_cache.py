@@ -59,7 +59,8 @@ class SessionCache:
                     turns=row['turns'], last_persisted=now,
                 )
 
-    def match(self, context, agent_mode, thinking_effort, available_account_ids=None, *, scope='') -> tuple[SessionEntry, int] | None:
+    def match(self, context, agent_mode, thinking_effort, available_account_ids=None, *, scope='',
+              allowed_thread_ids: set[str] | None = None) -> tuple[SessionEntry, int] | None:
         now = time.monotonic()
         messages = context.get('messages') or []
         current_hashes = tuple(map(hash_message, messages))
@@ -69,6 +70,7 @@ class SessionCache:
             if now - entry.last_used <= self.ttl
             and entry.config_hash == config_hash
             and (available_account_ids is None or entry.account_id in available_account_ids)
+            and (allowed_thread_ids is None or entry.thread_id in allowed_thread_ids)
             and 1 <= len(entry.msg_hashes) < len(current_hashes)
             and current_hashes[:len(entry.msg_hashes)] == entry.msg_hashes
             and any(messages[i].get('role') not in ('system', 'developer') for i in range(len(entry.msg_hashes)))

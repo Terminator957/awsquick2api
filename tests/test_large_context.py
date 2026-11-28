@@ -152,9 +152,9 @@ async def test_stream_offloads_by_encoded_bytes_without_truncation(monkeypatch, 
         assert uploaded[0]['data']==b'fixture_image'
         assert message['payload']['attachments'][0]['type']=='image'
     if offload:
-        assert json.loads(documents[0]['data']) == context
-        assert documents[0]['mimeType']=='application/json'
-        assert message['payload']['attachments'][-1]['name']=='api-context.json'
+        assert prompt in documents[0]['data'].decode('utf-8')
+        assert documents[0]['mimeType']=='text/plain'
+        assert message['payload']['attachments'][-1]['name']=='conversation-context.txt'
     else:
         assert message['payload']['text']==prompt
 
@@ -263,7 +263,10 @@ async def test_offload_includes_inline_recent_turns_and_multiline_attachment(mon
     assert 'SYSTEM_RULE_MARKER' in inline_text
     assert 'WITHOUT calling file_read or run_python' in inline_text
     assert uploaded and b'\n' in uploaded[0]['data']
-    assert json.loads(uploaded[0]['data']) == context
+    uploaded_txt = uploaded[0]['data'].decode('utf-8')
+    assert 'SYSTEM_RULE_MARKER' in uploaded_txt
+    assert 'LATEST_USER_QUESTION_MARKER' in uploaded_txt
+    assert 'EditFile' in uploaded_txt
 
 
 @pytest.mark.parametrize('event_type,expected_status,expected_text', [

@@ -86,6 +86,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                     await quota_task
                 except asyncio.CancelledError:
                     pass
+            await app.state.upstream.ws_pool.close_all()
             await auth.close()
             store.close()
 
@@ -382,12 +383,15 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         iterator = None
         first = ""
         cache = getattr(app.state.upstream, 'session_cache', None)
+        ws_pool = getattr(app.state.upstream, 'ws_pool', None)
         incognito = bool(settings.get('incognito', True))
         matched_entry, delta_offset = None, 0
-        if not incognito and cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
+        if cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
             eligible_ids = app.state.pool.eligible_ids(tried, group_name=key_group)
+            allowed_threads = ws_pool.thread_ids() if (incognito and ws_pool is not None) else None
             match = cache.match(prepared.context, value.mode, effective_effort,
-                                available_account_ids=eligible_ids, scope=api_key_id)
+                                available_account_ids=eligible_ids, scope=api_key_id,
+                                allowed_thread_ids=allowed_threads)
             if match is not None:
                 matched_entry, delta_offset = match
                 delta_messages = (prepared.context.get('messages') or [])[delta_offset:]
@@ -474,11 +478,14 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             finally:
                 await iterator.aclose()
                 await app.state.pool.release(account["id"], status, retry_after, error, penalize=penalize)
-                if status == 200 and not incognito and cache is not None and session_thread_id and prepared.context:
+                can_save_session = (not incognito) or (ws_pool is not None and ws_pool.has(session_thread_id))
+                if status == 200 and can_save_session and cache is not None and session_thread_id and prepared.context:
                     cache.save(account["id"], session_thread_id, prepared.context, value.mode,
                                effective_effort, scope=api_key_id)
                 elif status != 200 and cache is not None and session_thread_id:
                     cache.invalidate(session_thread_id)
+                    if ws_pool is not None:
+                        await ws_pool.invalidate(session_thread_id)
                 app.state.store.log(request_id, account["id"], status,
                                     round((time.monotonic() - started) * 1000), chars, error,
                                     model=value.model, session_hit=session_reused,
@@ -534,11 +541,14 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                     await retry_iter.aclose()
                     await app.state.pool.release(retry_account['id'], r_status, r_retry_after, r_error, penalize=r_penalize)
                     r_tid = retry_state.get('thread_id')
-                    if r_status == 200 and not incognito and cache is not None and r_tid and prepared.context:
+                    can_save_retry = (not incognito) or (ws_pool is not None and ws_pool.has(r_tid))
+                    if r_status == 200 and can_save_retry and cache is not None and r_tid and prepared.context:
                         cache.save(retry_account['id'], r_tid, prepared.context, value.mode,
                                    effective_effort, scope=api_key_id)
                     elif r_status != 200 and cache is not None and r_tid:
                         cache.invalidate(r_tid)
+                        if ws_pool is not None:
+                            await ws_pool.invalidate(r_tid)
                     app.state.store.log(uuid.uuid4().hex, retry_account['id'], r_status,
                                         round((time.monotonic() - started) * 1000), r_chars, r_error,
                                         model=value.model, session_hit=False,
