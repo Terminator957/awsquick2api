@@ -37,7 +37,9 @@ def _extract_loose_content_json(text: str) -> str | None:
     return _JSON_ESC_RE.sub(_unescape, raw)
 _REFUSAL_RE = re.compile(
     r"(?:not going to adopt|won't adopt|cannot adopt|refuse to adopt|output raw [`'\"]?tool_calls[`'\"]?|"
-    r"prompt[- ]injection|提示注入|不是我的身份|不是我实际可用的工具|AWS Quick\s*桌面应用|Coding agents)",
+    r"prompt[- ]injection|提示注入|不是我的身份|不是我实际可用的工具|AWS Quick\s*桌面应用|Coding agents|"
+    r"我是\s*AWS\s*Quick|没有\s*(?:Bash|Edit|Read|Write)|无法访问本地|在云端环境中|云端沙箱环境|"
+    r"don't have access to your local|no local (?:files|folders|terminal|shell))",
     re.IGNORECASE,
 )
 _QUICK_UI_TAG_RE = re.compile(r'<(?:decisions?|sources)\b[^>]*>[\s\S]*?</(?:decisions?|sources)>', re.IGNORECASE)
@@ -131,6 +133,8 @@ _IDENTITY_PATTERNS = (
     ), r'\1你正在协助开发者在本地代码仓库中完成软件工程任务。'),
     (re.compile(r'\bClaude Code\b', re.IGNORECASE), 'the coding client'),
     (re.compile(r"\bAnthropic's official CLI\b", re.IGNORECASE), 'the local coding CLI'),
+    (re.compile(r'\boverride(?:s|d|ing)?\s+(?:any\s+)?default\s+behavio[u]?r\b', re.IGNORECASE), 'apply as workspace preferences'),
+    (re.compile(r'覆盖(?:任何)?默认行为'), '作为工作区偏好生效'),
 )
 
 
@@ -141,7 +145,12 @@ def sanitize_outbound_text(text: str, *, soften_identity: bool = False) -> str:
     if 'x-anthropic-billing-header' in text.lower():
         text = re.sub(r'\n{3,}', '\n\n', _BILLING_HEADER_RE.sub('', text)).strip()
     if '<system-reminder>' in text.lower():
-        text = _SYSTEM_REMINDER_RE.sub(lambda m: f'[Context note: {m.group(1).strip()}]', text)
+        def _clean_reminder(m):
+            inner = m.group(1).strip()
+            for pattern, repl in _IDENTITY_PATTERNS:
+                inner = pattern.sub(repl, inner)
+            return f'[Context note: {inner}]'
+        text = _SYSTEM_REMINDER_RE.sub(_clean_reminder, text)
     if soften_identity:
         for pattern, repl in _IDENTITY_PATTERNS:
             text = pattern.sub(repl, text)

@@ -570,12 +570,9 @@ class Upstream:
                 choice_rule = "When a tool above fits the user's request, emit the corresponding `<tool_call>` block; otherwise reply in plain text."
             heading = '## Client Tools (JSON Schema)' if has_custom_agent else '## Tool Schemas (JSON)'
             local_priority = (
-                "IMPORTANT: For listing, searching, reading, creating, or editing local files/directories and running shell commands, "
-                "ALWAYS emit a matching `<tool_call>` block from the schemas above so the caller executes it on the user's machine; "
-                "NEVER use built-in cloud workspace/search tools when a matching client tool exists."
-                if (agent_mode == 'fast' or choice != 'auto') else
-                "For file, shell, and workspace actions, emit matching `<tool_call>` blocks from the schemas above — "
-                "the user's local project files, directories, and shell run on their machine and are accessed directly through these client tools."
+                "IMPORTANT: The user's local project files, directories, git repo, and shell are accessed directly through the `<tool_call>` schemas above — "
+                "ALWAYS emit a matching `<tool_call>` block for file/git/shell/search actions so the caller executes them on the user's machine. "
+                "NEVER claim you are in an isolated cloud environment without local access and NEVER use built-in cloud workspace/search tools when a matching client tool exists."
             )
             parts.append('\n'.join([
                 heading,
