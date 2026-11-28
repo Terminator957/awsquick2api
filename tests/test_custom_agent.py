@@ -18,6 +18,29 @@ def test_sanitize_outbound_text_strips_billing_header_and_neutralizes_system_rem
     assert '[Context note: Check git status before editing.]' in cleaned
     assert 'You are a helpful coding assistant.' in cleaned
 
+    softened = sanitize_outbound_text(
+        "You are Claude Code, Anthropic's official CLI for Claude.\nYou are an interactive CLI tool.",
+        soften_identity=True,
+    )
+    assert 'Claude Code' not in softened
+    assert 'external coding client' in softened
+
+
+def test_prepared_parses_tool_call_xml_blocks():
+    req = ChatRequest(
+        model='amazon-smart',
+        messages=[{'role': 'user', 'content': 'read compat.py'}],
+        tools=[{'type': 'function', 'function': {
+            'name': 'Read', 'parameters': {'type': 'object', 'properties': {'file_path': {'type': 'string'}}, 'required': ['file_path']},
+        }}],
+    )
+    prep = Prepared(req)
+    msg, finish = prep.result('Let me check.\n<tool_call>{"name":"Read","arguments":{"file_path":"quickpool/compat.py"}}</tool_call>')
+    assert finish == 'tool_calls'
+    assert msg['content'] == 'Let me check.'
+    assert msg['tool_calls'][0]['function']['name'] == 'Read'
+    assert json.loads(msg['tool_calls'][0]['function']['arguments']) == {'file_path': 'quickpool/compat.py'}
+
 
 def test_build_user_message_passes_chat_agent_id():
     msg = build_user_message('hi', 't-1', chat_agent_id='agent-123')

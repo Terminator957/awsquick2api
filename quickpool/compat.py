@@ -14,16 +14,48 @@ import uuid
 
 _BILLING_HEADER_RE = re.compile(r'^x-anthropic-billing-header[^\n]*$', re.IGNORECASE | re.MULTILINE)
 _SYSTEM_REMINDER_RE = re.compile(r'<system-reminder>([\s\S]*?)</system-reminder>', re.IGNORECASE)
+_TOOL_CALL_TAG_RE = re.compile(r'<tool_call>\s*([\s\S]*?)\s*</tool_call>', re.IGNORECASE)
+_IDENTITY_PATTERNS = (
+    (re.compile(
+        r'\bYou are (?:Claude Code|Codex|Cline|Roo Code|Roo|Kilo Code|Kilo|Cursor|OpenCode|'
+        r'OpenChamber|Hermes|Antigravity|ZCode|Windsurf|Aider|Augment|Trae|DeepSeek Harness|'
+        r'Witan|Devin|Goose|Continue)\b(?:[^\n.]|\.(?=\d|[a-z0-9-]+\.[a-z]{2,}))*\.?',
+        re.IGNORECASE,
+    ), 'You are assisting a developer through an external coding client.'),
+    (re.compile(
+        r"\bYou are Claude,\s+Anthropic's(?:[^\n.]|\.(?=\d|[a-z0-9-]+\.[a-z]{2,}))*\.?",
+        re.IGNORECASE,
+    ), 'You are assisting a developer through an external coding client.'),
+    (re.compile(
+        r'\bYou are an interactive CLI tool\b',
+        re.IGNORECASE,
+    ), 'You are assisting a developer using an interactive CLI client'),
+    (re.compile(
+        r'\bYou are a coding agent running in(?:[^\n.]|\.(?=\d|[a-z0-9-]+\.[a-z]{2,}))*\.?',
+        re.IGNORECASE,
+    ), 'You are assisting a developer working in a local coding environment.'),
+    (re.compile(
+        r'(^|\n)You are (?:running|operating) inside [^\n.]*?\b(?:environment|harness|orchestration|agent|CLI|IDE)\b'
+        r'(?:[^\n.]|\.(?=\d|[a-z0-9-]+\.[a-z]{2,}))*\.?',
+        re.IGNORECASE,
+    ), r'\1You are assisting a developer working in a local coding environment.'),
+    (re.compile(
+        r'(^|\n)你是[^\n。]{1,28}(?:研发|开发|打造|推出)的[^\n。]{0,28}(?:代理|助手|智能体|工具)[^\n。]*。?',
+    ), r'\1你正在协助开发者在本地代码仓库中完成软件工程任务。'),
+)
 
 
-def sanitize_outbound_text(text: str) -> str:
-    """Strip high-risk CLI billing headers and neutralize <system-reminder> tags to avoid prompt-injection false positives."""
+def sanitize_outbound_text(text: str, *, soften_identity: bool = False) -> str:
+    """Strip high-risk CLI billing headers, neutralize <system-reminder>, and optionally soften conflicting CLI identities."""
     if not text:
         return text
     if 'x-anthropic-billing-header' in text.lower():
         text = re.sub(r'\n{3,}', '\n\n', _BILLING_HEADER_RE.sub('', text)).strip()
     if '<system-reminder>' in text.lower():
         text = _SYSTEM_REMINDER_RE.sub(lambda m: f'[Context note: {m.group(1).strip()}]', text)
+    if soften_identity:
+        for pattern, repl in _IDENTITY_PATTERNS:
+            text = pattern.sub(repl, text)
     return text
 
 from jsonschema import Draft202012Validator
@@ -116,14 +148,15 @@ class Prepared:
         messages = []
         for message in request.messages:
             item = message.model_dump(exclude_none=True)
+            soften = bool(self.tools) and item.get('role') in ('system', 'developer')
             parts = item.get('content')
             if isinstance(parts, str):
-                item['content'] = sanitize_outbound_text(parts)
+                item['content'] = sanitize_outbound_text(parts, soften_identity=soften)
             elif isinstance(parts, list):
                 texts = []
                 for part in parts:
                     if part['type'] == 'text':
-                        texts.append(sanitize_outbound_text(part['text']))
+                        texts.append(sanitize_outbound_text(part['text'], soften_identity=soften))
                     else:
                         self.images.append(image_data(part['image_url']['url'], max_image_mb=max_image_mb))
                         texts.append(f'[图片附件 {len(self.images)}]')
@@ -171,9 +204,24 @@ class Prepared:
             try:
                 value = json.loads(stripped)
             except ValueError:
+                # Also accept <tool_call>{...}</tool_call> blocks (emitted by Coding Assistant custom agents).
+                if self.tools and self.format['type'] == 'text' and '<tool_call>' in stripped.lower():
+                    tag_calls = []
+                    for match in _TOOL_CALL_TAG_RE.finditer(stripped):
+                        parsed_call = json.loads(match.group(1))
+                        if isinstance(parsed_call, dict):
+                            tag_calls.append(parsed_call)
+                    if tag_calls:
+                        value = {'tool_calls': tag_calls}
+                        commentary = _TOOL_CALL_TAG_RE.sub('', stripped).strip() or None
+                    else:
+                        value = None
+                else:
+                    value = None
+            if value is None:
                 # Quick can narrate native attachment reads (even with braces or fenced JSON) before the final JSON.
                 if not self.tools or self.format['type'] != 'text':
-                    raise
+                    raise ValueError
                 candidate_text = stripped
                 if candidate_text.endswith('```'):
                     fence = candidate_text.rfind('```json')
@@ -182,7 +230,6 @@ class Prepared:
                     if fence > 0:
                         inner = candidate_text[fence:].split('\n', 1)[-1].rsplit('```', 1)[0].strip()
                         candidate_text = candidate_text[:fence] + inner
-                value = None
                 start = -1
                 search_from = 0
                 while True:
