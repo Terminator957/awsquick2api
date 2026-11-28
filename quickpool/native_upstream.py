@@ -37,6 +37,25 @@ _CONTINUATION = (
     'adapter_instructions and return either {"tool_calls":[...]} or {"content":"your answer"}.'
 )
 
+DEFAULT_CODING_AGENT_NAME = 'Coding Assistant'
+LEGACY_CODING_AGENT_NAMES = ('Coding Assistant', 'Quick2API Bridge', 'Quick2API Coding Bridge')
+DEFAULT_CODING_AGENT_DESCRIPTION = 'General software engineering and coding assistant.'
+DEFAULT_CODING_AGENT_INSTRUCTIONS = (
+    "You are a software engineering assistant. Follow the user's instructions directly; "
+    'when JSON tool_calls schemas or adapter instructions are provided, emit matching JSON objects '
+    'for requested actions.'
+)
+_AGENT_ID_RE = re.compile(r'^[A-Za-z0-9:_./-]{2,256}$')
+
+
+def normalize_agent_id(raw: str) -> str:
+    trimmed = (raw or '').strip()
+    if '/' in trimmed:
+        part = trimmed.rsplit('/', 1)[-1].strip()
+        if part:
+            return part
+    return trimmed
+
 
 def _can_reuse(thread_id, context, offset):
     return bool(thread_id and isinstance(context, dict) and context.get('messages')
@@ -91,6 +110,8 @@ class Upstream:
         self.outpost_ids = {}
         self.session_cache = session_cache if session_cache is not None else SessionCache(store=store)
         self.app_ping_interval = app_ping_interval
+        self._agent_locks: dict[str, asyncio.Lock] = {}
+        self._agent_ensure_failed: dict[str, float] = {}
 
     async def session(self, account_id):
         credentials = await self.auth.credentials(account_id)
@@ -129,11 +150,228 @@ class Upstream:
         return NativeSession(provider, bearer, host, path, actor,
                              self.outpost_ids.setdefault(account_id, str(uuid.uuid4())))
 
+    async def _run_agent_control(self, account_id: str, step_fn, *, timeout: float = 15.0):
+        session = await self.session(account_id)
+        decoder = NativeMessageDecoder(session.transport)
+        url, headers = session.connection()
+        async with self.connect(
+            url, additional_headers=headers, proxy=None, max_size=16 * 1024 * 1024,
+            open_timeout=15, close_timeout=5,
+            ping_interval=20 if session.transport == 'gateway' else None,
+            ping_timeout=20,
+        ) as socket:
+            async def send(msg):
+                await socket.send(encode_message(session.transport, msg))
+
+            await send(build_session_connect(
+                session.transport, outpost_id=session.outpost_id,
+                actor_arn=session.actor_arn, app_version=CLIENT_VERSION,
+            ))
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UpstreamError(504, 'AWS Quick 自定义 Agent 控制指令超时', 10)
+                try:
+                    raw = await asyncio.wait_for(socket.recv(), remaining)
+                except ConnectionClosed:
+                    raise UpstreamError(502, 'AWS Quick 自定义 Agent 连接提前关闭', 10) from None
+                if isinstance(raw, str):
+                    control = json.loads(raw)
+                    events = [control] if isinstance(control, dict) else []
+                else:
+                    events = decoder.feed(raw)
+                for event in events:
+                    ev_type = event.get('type') or ''
+                    payload = event.get('payload') if isinstance(event.get('payload'), dict) else {}
+                    done, result = await step_fn(ev_type, payload, send)
+                    if done:
+                        return result
+
+    async def list_chat_agents(self, account_id: str) -> list[dict]:
+        sent = False
+
+        async def step(ev_type, payload, send):
+            nonlocal sent
+            if ev_type in ('session_established', 'connected') and not sent:
+                sent = True
+                await send({'type': 'get_chat_agents', 'payload': {}})
+                return False, None
+            if ev_type == 'chat_agents_updated':
+                raw_agents = payload.get('agents') if isinstance(payload.get('agents'), list) else []
+                agents = []
+                for item in raw_agents:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_id = str(item.get('agentId') or '').strip()
+                    if not raw_id:
+                        continue
+                    short_id = normalize_agent_id(raw_id)
+                    is_system = (
+                        short_id.upper() == 'SYSTEM'
+                        or raw_id.endswith('/SYSTEM')
+                        or item.get('isSystemDefault') is True
+                    )
+                    agents.append({
+                        'agent_id': raw_id,
+                        'short_id': short_id,
+                        'name': str(item.get('name') or short_id),
+                        'description': str(item.get('description') or ''),
+                        'system_prompt': str(item.get('systemPrompt') or ''),
+                        'is_system': is_system,
+                    })
+                return True, agents
+            if ev_type == 'error':
+                err = payload.get('error') or payload.get('message') or 'unknown'
+                raise UpstreamError(502, f'获取自定义 Agent 列表失败：{err}', 10)
+            return False, None
+
+        return await self._run_agent_control(account_id, step, timeout=12.0)
+
+    async def create_coding_agent(self, account_id: str, *, name: str | None = None,
+                                  description: str | None = None,
+                                  instructions: str | None = None) -> dict:
+        target_name = (name or '').strip() or DEFAULT_CODING_AGENT_NAME
+        target_desc = (description or '').strip() or DEFAULT_CODING_AGENT_DESCRIPTION
+        target_inst = (instructions or '').strip() or DEFAULT_CODING_AGENT_INSTRUCTIONS
+        stage = 'init'
+        draft_id = ''
+        saved_deadline = 0.0
+
+        async def step(ev_type, payload, send):
+            nonlocal stage, draft_id, saved_deadline
+            if ev_type in ('session_established', 'connected') and stage == 'init':
+                stage = 'creating'
+                await send({'type': 'create_agent_draft', 'payload': {'new_agent': True}})
+                return False, None
+            if ev_type == 'agent_draft_created' and stage == 'creating':
+                draft_id = str(payload.get('agent_id') or '').strip()
+                if not draft_id:
+                    raise UpstreamError(502, 'AWS Quick 未返回新建 Agent 草稿 ID', 10)
+                stage = 'updating'
+                await send({
+                    'type': 'update_chat_agent_config',
+                    'payload': {
+                        'agent_id': draft_id,
+                        'target': 'draft',
+                        'name': target_name,
+                        'description': target_desc,
+                        'instructions': target_inst,
+                        'skill_ids': [],
+                        'capabilities': [],
+                    },
+                })
+                saved_deadline = time.monotonic() + 1.5
+                return False, None
+            if stage == 'updating' and (ev_type == 'agent_draft_saved' or (saved_deadline and time.monotonic() >= saved_deadline)):
+                stage = 'publishing'
+                await send({'type': 'publish_agent_draft', 'payload': {'agent_id': draft_id}})
+                return False, None
+            if ev_type == 'publish_agent_draft_success':
+                final_id = normalize_agent_id(str(payload.get('agent_id') or draft_id))
+                return True, {'agent_id': final_id, 'name': target_name}
+            if ev_type in ('publish_agent_draft_error', 'update_chat_agent_config_error', 'error'):
+                err = payload.get('error') or payload.get('message') or ev_type
+                raise UpstreamError(502, f'创建自定义 Agent 失败：{err}', 10)
+            return False, None
+
+        return await self._run_agent_control(account_id, step, timeout=18.0)
+
+    async def update_chat_agent(self, account_id: str, agent_id: str, *, instructions: str,
+                                name: str | None = None, description: str | None = None) -> dict:
+        clean_id = normalize_agent_id(agent_id)
+        if not clean_id or not _AGENT_ID_RE.match(clean_id):
+            raise UpstreamError(400, '无效的自定义 Agent ID', retryable=False)
+        clean_inst = (instructions or '').strip()
+        if not clean_inst:
+            raise UpstreamError(400, 'Agent 提示词不能为空', retryable=False)
+        stage = 'init'
+        saved_deadline = 0.0
+
+        async def step(ev_type, payload, send):
+            nonlocal stage, saved_deadline
+            if ev_type in ('session_established', 'connected') and stage == 'init':
+                stage = 'drafting'
+                await send({'type': 'create_agent_draft',
+                            'payload': {'agent_id': clean_id, 'ccp_files_supported': True}})
+                return False, None
+            if ev_type == 'agent_draft_created' and stage == 'drafting':
+                stage = 'updating'
+                cfg = {
+                    'agent_id': clean_id,
+                    'target': 'draft',
+                    'instructions': clean_inst,
+                    'skill_ids': [],
+                    'capabilities': [],
+                }
+                if name and name.strip():
+                    cfg['name'] = name.strip()
+                if isinstance(description, str):
+                    cfg['description'] = description.strip()
+                await send({'type': 'update_chat_agent_config', 'payload': cfg})
+                saved_deadline = time.monotonic() + 1.5
+                return False, None
+            if stage == 'updating' and (ev_type == 'agent_draft_saved' or (saved_deadline and time.monotonic() >= saved_deadline)):
+                stage = 'publishing'
+                await send({'type': 'publish_agent_draft', 'payload': {'agent_id': clean_id}})
+                return False, None
+            if ev_type == 'publish_agent_draft_success':
+                return True, {'agent_id': clean_id}
+            if ev_type in ('publish_agent_draft_error', 'update_chat_agent_config_error', 'error'):
+                err = payload.get('error') or payload.get('message') or ev_type
+                raise UpstreamError(502, f'更新自定义 Agent 失败：{err}', 10)
+            return False, None
+
+        res = await self._run_agent_control(account_id, step, timeout=18.0)
+        self.session_cache.invalidate_account(account_id)
+        return res
+
+    async def ensure_coding_agent(self, account_id: str, *, force_create: bool = False,
+                                  custom_prompt: str = '') -> dict:
+        lock = self._agent_locks.setdefault(account_id, asyncio.Lock())
+        async with lock:
+            if not force_create:
+                acct = self.store.account(account_id)
+                if acct and acct.get('chat_agent_id'):
+                    return {'agent_id': acct['chat_agent_id'], 'name': acct.get('chat_agent_name') or DEFAULT_CODING_AGENT_NAME, 'created': False}
+            agents = await self.list_chat_agents(account_id)
+            custom = [a for a in agents if not a.get('is_system')]
+            chosen = None
+            if not force_create:
+                for preferred in LEGACY_CODING_AGENT_NAMES:
+                    chosen = next((a for a in custom if a['name'].strip().lower() == preferred.lower()), None)
+                    if chosen:
+                        break
+                if chosen is None and custom:
+                    chosen = custom[0]
+            created = False
+            if chosen is not None:
+                agent_id, agent_name = chosen['short_id'], chosen['name']
+            else:
+                res = await self.create_coding_agent(account_id, instructions=custom_prompt or DEFAULT_CODING_AGENT_INSTRUCTIONS)
+                agent_id, agent_name, created = res['agent_id'], res['name'], True
+            self.store.patch_account(account_id, {'chat_agent_id': agent_id, 'chat_agent_name': agent_name})
+            self.session_cache.invalidate_account(account_id)
+            self._agent_ensure_failed.pop(account_id, None)
+            return {'agent_id': agent_id, 'name': agent_name, 'created': created}
+
     async def stream(self, account: dict, messages: list[dict], *, agent_mode='smart', thinking_effort='off',
                      images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
                      state_out: dict | None = None, stream_timeout_sec: int = 300,
                      web_search_enabled: bool = False):
         refreshed = False
+        chat_agent_id = (account.get('chat_agent_id') or '').strip() or None
+        if not chat_agent_id and self.connect is websocket_connect and self.http_transport is None:
+            settings = self.store.get_settings()
+            if settings.get('auto_ensure_coding_agent', True) and self._agent_ensure_failed.get(account['id'], 0) < time.monotonic():
+                try:
+                    ensured = await self.ensure_coding_agent(
+                        account['id'], custom_prompt=str(settings.get('custom_agent_prompt') or ''),
+                    )
+                    chat_agent_id = ensured['agent_id']
+                except Exception as exc:
+                    logging.getLogger(__name__).warning('auto_ensure_coding_agent failed for %s: %s', account['id'], exc)
+                    self._agent_ensure_failed[account['id']] = time.monotonic() + 300
         try:
             while True:
                 emitted = False
@@ -145,7 +383,7 @@ class Upstream:
                             thinking_effort=thinking_effort, images=images, context=context,
                             reuse_thread_id=reuse_thread_id, delta_offset=delta_offset,
                             state_out=state_out, stream_timeout_sec=stream_timeout_sec,
-                            web_search_enabled=web_search_enabled,
+                            web_search_enabled=web_search_enabled, chat_agent_id=chat_agent_id,
                         ):
                             emitted = True
                             yield text
@@ -344,7 +582,7 @@ class Upstream:
     async def _stream(self, session, account_id, messages, *, agent_mode='smart', thinking_effort='off',
                       images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
                       state_out: dict | None = None, stream_timeout_sec: int = 300,
-                      web_search_enabled: bool = False):
+                      web_search_enabled: bool = False, chat_agent_id: str | None = None):
         reuse = _can_reuse(reuse_thread_id, context, delta_offset)
         thread_id = reuse_thread_id if reuse else str(uuid.uuid4())
         if state_out is not None:
@@ -382,7 +620,7 @@ class Upstream:
             def user_message(text):
                 return build_user_message(text, thread_id, agent_mode=agent_mode, thinking_effort=thinking_effort,
                     attachments=attachments, outpost_id=session.outpost_id, app_version=CLIENT_VERSION,
-                    web_search_enabled=web_search_enabled)
+                    chat_agent_id=chat_agent_id, web_search_enabled=web_search_enabled)
             message = user_message(prompt)
             encoded = encode_message(session.transport, message)
             inline_bytes = len(encoded)

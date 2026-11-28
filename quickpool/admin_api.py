@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import UserCreate, UserPatch
-from .native_upstream import UpstreamError
+from .native_upstream import DEFAULT_CODING_AGENT_INSTRUCTIONS, UpstreamError, normalize_agent_id
 
 
 class APIKeyCreate(BaseModel):
@@ -49,6 +49,27 @@ class SettingsPatch(BaseModel):
     log_retention: int | None = Field(default=None, ge=1000, le=100000)
     smart_default_effort: Literal['off', 'low', 'medium', 'high'] | None = None
     client_restriction: Literal['off', 'claude_only'] | None = None
+    auto_ensure_coding_agent: bool | None = None
+    custom_agent_prompt: str | None = Field(default=None, max_length=8000)
+
+
+class AgentSelectBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    agent_id: str = Field(default='', max_length=256)
+    agent_name: str = Field(default='', max_length=120)
+
+
+class AgentEnsureBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    force_create: bool = False
+    instructions: str = Field(default='', max_length=8000)
+
+
+class AgentUpdateBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    instructions: str = Field(min_length=1, max_length=8000)
+    name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
 
 
 def register_admin_routes(app, admin):
@@ -124,6 +145,69 @@ def register_admin_routes(app, admin):
     async def delete_session(thread_id: str):
         app.state.upstream.session_cache.invalidate(thread_id)
         return {'deleted': True}
+
+    @router.get('/accounts/{account_id}/agents')
+    async def list_account_agents(account_id: str):
+        acct = app.state.store.account(account_id)
+        if acct is None:
+            raise HTTPException(404, '账号不存在')
+        try:
+            agents = await app.state.upstream.list_chat_agents(account_id)
+        except UpstreamError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        return {
+            'bound_agent_id': acct.get('chat_agent_id') or '',
+            'bound_agent_name': acct.get('chat_agent_name') or '',
+            'agents': agents,
+            'default_prompt': app.state.store.get_settings().get('custom_agent_prompt') or DEFAULT_CODING_AGENT_INSTRUCTIONS,
+        }
+
+    @router.post('/accounts/{account_id}/agents/ensure')
+    async def ensure_account_agent(account_id: str, body: AgentEnsureBody | None = None):
+        acct = app.state.store.account(account_id)
+        if acct is None:
+            raise HTTPException(404, '账号不存在')
+        req = body or AgentEnsureBody()
+        prompt = req.instructions.strip() or str(app.state.store.get_settings().get('custom_agent_prompt') or '')
+        try:
+            result = await app.state.upstream.ensure_coding_agent(
+                account_id, force_create=req.force_create, custom_prompt=prompt,
+            )
+            agents = await app.state.upstream.list_chat_agents(account_id)
+        except UpstreamError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        return {**result, 'agents': agents}
+
+    @router.post('/accounts/{account_id}/agents/select')
+    async def select_account_agent(account_id: str, body: AgentSelectBody):
+        acct = app.state.store.account(account_id)
+        if acct is None:
+            raise HTTPException(404, '账号不存在')
+        agent_id = normalize_agent_id(body.agent_id) if body.agent_id.strip() else ''
+        agent_name = body.agent_name.strip() if agent_id else ''
+        updated = app.state.store.patch_account(account_id, {
+            'chat_agent_id': agent_id,
+            'chat_agent_name': agent_name,
+        })
+        app.state.upstream.session_cache.invalidate_account(account_id)
+        return {'bound_agent_id': updated['chat_agent_id'], 'bound_agent_name': updated['chat_agent_name']}
+
+    @router.put('/accounts/{account_id}/agents/{agent_id}')
+    async def update_account_agent(account_id: str, agent_id: str, body: AgentUpdateBody):
+        acct = app.state.store.account(account_id)
+        if acct is None:
+            raise HTTPException(404, '账号不存在')
+        try:
+            result = await app.state.upstream.update_chat_agent(
+                account_id, agent_id, instructions=body.instructions,
+                name=body.name, description=body.description,
+            )
+            if body.name and body.name.strip() and acct.get('chat_agent_id') == result['agent_id']:
+                app.state.store.patch_account(account_id, {'chat_agent_name': body.name.strip()})
+            agents = await app.state.upstream.list_chat_agents(account_id)
+        except UpstreamError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        return {**result, 'agents': agents}
 
     @router.get('/logs/export')
     async def export_logs(account_id: str = '', status: str = '', model: str = '',

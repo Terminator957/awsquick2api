@@ -8,7 +8,23 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 import uuid
+
+
+_BILLING_HEADER_RE = re.compile(r'^x-anthropic-billing-header[^\n]*$', re.IGNORECASE | re.MULTILINE)
+_SYSTEM_REMINDER_RE = re.compile(r'<system-reminder>([\s\S]*?)</system-reminder>', re.IGNORECASE)
+
+
+def sanitize_outbound_text(text: str) -> str:
+    """Strip high-risk CLI billing headers and neutralize <system-reminder> tags to avoid prompt-injection false positives."""
+    if not text:
+        return text
+    if 'x-anthropic-billing-header' in text.lower():
+        text = re.sub(r'\n{3,}', '\n\n', _BILLING_HEADER_RE.sub('', text)).strip()
+    if '<system-reminder>' in text.lower():
+        text = _SYSTEM_REMINDER_RE.sub(lambda m: f'[Context note: {m.group(1).strip()}]', text)
+    return text
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
@@ -101,11 +117,13 @@ class Prepared:
         for message in request.messages:
             item = message.model_dump(exclude_none=True)
             parts = item.get('content')
-            if isinstance(parts, list):
+            if isinstance(parts, str):
+                item['content'] = sanitize_outbound_text(parts)
+            elif isinstance(parts, list):
                 texts = []
                 for part in parts:
                     if part['type'] == 'text':
-                        texts.append(part['text'])
+                        texts.append(sanitize_outbound_text(part['text']))
                     else:
                         self.images.append(image_data(part['image_url']['url'], max_image_mb=max_image_mb))
                         texts.append(f'[图片附件 {len(self.images)}]')

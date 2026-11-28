@@ -243,7 +243,8 @@ class NativeMessageDecoder:
 
 def _client_fields(surface: str, outpost_id: str, app_version: str | None) -> dict[str, Any]:
     fields = {"surfaceType": surface, "acp_first_text": 1, "user_notification": 1,
-              "subtask_progress": 1, "external_agent_sign_in": 1, "recents_promotion": 1}
+              "subtask_progress": 1, "external_agent_sign_in": 1, "recents_promotion": 1,
+              "self_registering_connectors": 1}
     if outpost_id:
         fields["outpostId"] = outpost_id
     if app_version:
@@ -279,7 +280,8 @@ def build_user_message(text: str, thread_id: str, *, message_id: str | None = No
                        thinking_effort: str = "off", user_timezone: str = "UTC",
                        user_locale: str = "en-US", surface: str = DESKTOP_SURFACE,
                        outpost_id: str = "", app_version: str | None = None,
-                       custom_prompt: str | None = None, web_search_enabled: bool = False,
+                       custom_prompt: str | None = None, chat_agent_id: str | None = None,
+                       web_search_enabled: bool = False,
                        auto_routing: bool = False, attachments: list[dict] | None = None) -> dict[str, Any]:
     return {"type": "user_message", "payload": {
         "traceId": trace_id or str(uuid.uuid4()), "text": text, "send_origin": "programmatic",
@@ -287,7 +289,7 @@ def build_user_message(text: str, thread_id: str, *, message_id: str | None = No
         "message_id": message_id or str(uuid.uuid4()), "thread_id": thread_id,
         "agent_mode": agent_mode, "thinking_effort": thinking_effort,
         "user_timezone": user_timezone, "user_locale": user_locale,
-        "custom_prompt": custom_prompt, "chat_agent_id": None, "auto_routing": auto_routing,
+        "custom_prompt": custom_prompt, "chat_agent_id": chat_agent_id or None, "auto_routing": auto_routing,
         "web_search_enabled": web_search_enabled, "direct_chat": False, "voice_mode": False,
         **({'attachments': attachments} if attachments else {})}}
 

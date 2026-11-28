@@ -26,7 +26,7 @@ function formatTokensCN(n) {
   return Math.round(n).toLocaleString();
 }
 function toast(message) {
-  const dialog = $('dialog#key-result[open], dialog#key-dialog[open], dialog#user-dialog[open], dialog#detail-dialog[open]');
+  const dialog = $('dialog#agent-dialog[open], dialog#key-result[open], dialog#key-dialog[open], dialog#user-dialog[open], dialog#detail-dialog[open]');
   const box = $('#toast');
   (dialog || document.body).append(box);
   box.textContent = message; box.hidden = false;
@@ -124,13 +124,16 @@ function accountTable(accounts, summary = false) {
     }
     const id = escapeHTML(a.id);
     const select = summary ? '' : `<td class="select-cell"><input type="checkbox" data-select-account="${id}" aria-label="选择${escapeHTML(a.name)}"></td>`;
+    const agentBadge = a.chat_agent_id
+      ? `<span class="pill agent-pill bound" title="已绑定自定义 Agent: ${escapeHTML(a.chat_agent_id)}">${escapeHTML(a.chat_agent_name || a.chat_agent_id.slice(0, 10))}</span>`
+      : '';
     return `<tr>${select}<td class="name-cell"><div class="account-identity">
       <span class="account-avatar">${escapeHTML(a.name?.slice(0,1).toUpperCase())}</span>
-      <div><button class="account-name" data-action="detail" data-id="${id}">${escapeHTML(a.name ?? '—')}</button><span class="secondary mono">${escapeHTML(detail)}</span></div>
+      <div><button class="account-name" data-action="detail" data-id="${id}">${escapeHTML(a.name ?? '—')}</button>${agentBadge}<span class="secondary mono">${escapeHTML(detail)}</span></div>
       </div></td><td>${statusBadge(a)}</td><td>${quotaSummary(a)}</td>
       <td class="mono">${escapeHTML(a.inflight)} / ${escapeHTML(a.max_concurrency)}<span class="secondary">权重 ${escapeHTML(a.weight)}</span></td>
       <td class="mono">${escapeHTML(a.successes)} <span class="muted">/ ${escapeHTML(a.failures)}</span></td>
-      <td><div class="account-actions"><button data-action="detail" data-id="${id}">详情</button><button data-action="login" data-id="${id}">${a.configured ? '重新授权' : '授权'}</button><button data-action="test" data-id="${id}">测试</button></div></td></tr>`;
+      <td><div class="account-actions"><button data-action="agents" data-id="${id}">Agent</button><button data-action="detail" data-id="${id}">详情</button><button data-action="login" data-id="${id}">${a.configured ? '重新授权' : '授权'}</button><button data-action="test" data-id="${id}">测试</button></div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 function renderSelection() {
@@ -382,7 +385,7 @@ async function loadSessions() {
   $('#sessions-empty').hidden = !!sessions.length;
   $('#clear-sessions').disabled = !sessions.length;
 }
-function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off'}) {
+function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off', auto_ensure_coding_agent = true, custom_agent_prompt = ''}) {
   $('#scheduling-strategy').value = scheduling_strategy;
   $('#session-cache-ttl').value = session_cache_ttl;
   $('#max-attempts').value = max_attempts;
@@ -395,6 +398,8 @@ function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, m
   $('#log-retention').value = log_retention;
   $('#smart-default-effort').value = smart_default_effort;
   $('#client-restriction').value = client_restriction;
+  $('#auto-ensure-coding-agent').value = String(Boolean(auto_ensure_coding_agent));
+  $('#custom-agent-prompt').value = custom_agent_prompt || '';
   $('#settings-form button').disabled = false;
 }
 async function loadSettings() { renderSettings(await api('/api/settings')); }
@@ -799,6 +804,8 @@ async function accountAction(action, id, button) {
     if (!account) return;
     if (action === 'detail') {
       await openDetail(id, action); return;
+    } else if (action === 'agents') {
+      await openAgentManager(account); return;
     } else if (action === 'save-detail') {
       await api(`/api/accounts/${encodeURIComponent(id)}`, {method: 'PATCH', body: JSON.stringify({name: $('#detail-name').value.trim(),
         group_name: $('#detail-group-name').value.trim(), notes: $('#detail-notes').value.trim(),
@@ -886,7 +893,9 @@ $('#settings-form').addEventListener('submit', async event => {
     max_tools: Number($('#max-tools').value), max_body_mb: Number($('#max-body-mb').value),
     stream_timeout_sec: Number($('#stream-timeout-sec').value), log_retention: Number($('#log-retention').value),
     smart_default_effort: $('#smart-default-effort').value,
-    client_restriction: $('#client-restriction').value};
+    client_restriction: $('#client-restriction').value,
+    auto_ensure_coding_agent: $('#auto-ensure-coding-agent').value === 'true',
+    custom_agent_prompt: $('#custom-agent-prompt').value.trim()};
   button.disabled = true;
   try {
     renderSettings(await api('/api/settings', {method: 'PATCH', body: JSON.stringify(settings)}));
@@ -1091,3 +1100,162 @@ function setAutoRefresh() {
 }
 $('#auto-refresh').addEventListener('change', setAutoRefresh);
 setAutoRefresh();
+
+// --- Theme Toggle (Geist Light / Dark) ---
+function applyTheme(theme) {
+  const next = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('quickpool-theme', next);
+  const btn = $('#theme-toggle');
+  if (btn) btn.textContent = next === 'light' ? '☾' : '☀';
+}
+applyTheme(localStorage.getItem('quickpool-theme') || 'dark');
+$('#theme-toggle')?.addEventListener('click', () => {
+  applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+});
+
+// --- Custom Agent Manager ---
+let agentModalAccountId = '';
+let agentModalAgents = [];
+
+function renderAgentList(boundId, boundName, agents) {
+  agentModalAgents = agents || [];
+  text('#agent-bound-label', boundId ? `${boundName || 'Custom'} (${boundId})` : '默认 Agent (SYSTEM)');
+  const container = $('#agent-list');
+  if (!agents.length) {
+    container.innerHTML = '<p class="muted">该账号下暂无自定义 Agent，点击上方「自动创建/绑定 Coding Assistant」即可一键创建。</p>';
+    return;
+  }
+  container.replaceChildren(...agents.map(ag => {
+    const isBound = boundId && (ag.short_id === boundId || ag.agent_id === boundId);
+    const card = document.createElement('div');
+    card.className = 'agent-card' + (isBound ? ' bound' : '');
+    const head = document.createElement('div');
+    head.className = 'agent-card-head';
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = ag.name || ag.short_id;
+    const tag = document.createElement('span');
+    tag.className = 'pill';
+    tag.textContent = ag.is_system ? 'SYSTEM' : (isBound ? '已绑定' : '自定义');
+    const idSpan = document.createElement('span');
+    idSpan.className = 'secondary mono';
+    idSpan.textContent = ag.short_id;
+    titleWrap.append(title, ' ', tag, idSpan);
+    const acts = document.createElement('div');
+    acts.className = 'key-actions';
+    if (!ag.is_system) {
+      if (!isBound) {
+        acts.append(rowButton('绑定', async () => {
+          const res = await api(`/api/accounts/${encodeURIComponent(agentModalAccountId)}/agents/select`, {
+            method: 'POST', body: JSON.stringify({agent_id: ag.short_id, agent_name: ag.name}),
+          });
+          toast('已绑定 Agent: ' + ag.name);
+          renderAgentList(res.bound_agent_id, res.bound_agent_name, agentModalAgents);
+          await refresh();
+        }));
+      }
+      acts.append(rowButton('编辑提示词', async () => {
+        $('#agent-edit-form').hidden = false;
+        $('#agent-edit-form').dataset.agentId = ag.short_id;
+        text('#agent-edit-id', ag.short_id);
+        $('#agent-edit-name').value = ag.name || '';
+        $('#agent-edit-desc').value = ag.description || '';
+        $('#agent-edit-instructions').value = ag.system_prompt || '';
+        $('#agent-edit-instructions').focus();
+      }));
+    } else if (boundId) {
+      acts.append(rowButton('切换回默认', async () => {
+        const res = await api(`/api/accounts/${encodeURIComponent(agentModalAccountId)}/agents/select`, {
+          method: 'POST', body: JSON.stringify({agent_id: '', agent_name: ''}),
+        });
+        toast('已恢复默认 Agent');
+        renderAgentList(res.bound_agent_id, res.bound_agent_name, agentModalAgents);
+        await refresh();
+      }));
+    }
+    head.append(titleWrap, acts);
+    card.append(head);
+    if (ag.system_prompt) {
+      const pre = document.createElement('pre');
+      pre.className = 'agent-prompt-preview';
+      pre.textContent = ag.system_prompt.slice(0, 320) + (ag.system_prompt.length > 320 ? '…' : '');
+      card.append(pre);
+    }
+    return card;
+  }));
+}
+
+async function fetchAccountAgents(accountId) {
+  $('#agent-list').innerHTML = '<p class="muted">正在从 AWS Quick 读取自定义 Agent 列表…</p>';
+  $('#agent-edit-form').hidden = true;
+  const data = await api(`/api/accounts/${encodeURIComponent(accountId)}/agents`);
+  renderAgentList(data.bound_agent_id, data.bound_agent_name, data.agents || []);
+}
+
+async function openAgentManager(account) {
+  agentModalAccountId = account.id;
+  text('#agent-account-name', account.name);
+  text('#agent-bound-label', account.chat_agent_id ? `${account.chat_agent_name || 'Custom'} (${account.chat_agent_id})` : '默认 Agent (SYSTEM)');
+  $('#agent-edit-form').hidden = true;
+  $('#agent-dialog').showModal();
+  try {
+    await fetchAccountAgents(account.id);
+  } catch (error) {
+    $('#agent-list').innerHTML = `<p class="form-error">${escapeHTML(error.message)}</p>`;
+  }
+}
+
+$('#agent-refresh')?.addEventListener('click', () => {
+  if (agentModalAccountId) fetchAccountAgents(agentModalAccountId).catch(error => toast(error.message));
+});
+$('#agent-ensure')?.addEventListener('click', async event => {
+  if (!agentModalAccountId) return;
+  const btn = event.currentTarget; btn.disabled = true;
+  try {
+    toast('正在自动查找或创建并发布 Coding Assistant…');
+    const res = await api(`/api/accounts/${encodeURIComponent(agentModalAccountId)}/agents/ensure`, {
+      method: 'POST', body: JSON.stringify({force_create: false}),
+    });
+    toast((res.created ? '已创建并绑定：' : '已绑定已有 Agent：') + res.name);
+    renderAgentList(res.agent_id, res.name, res.agents || []);
+    await refresh();
+  } catch (error) { toast(error.message); }
+  finally { btn.disabled = false; }
+});
+$('#agent-restore-default')?.addEventListener('click', async event => {
+  if (!agentModalAccountId) return;
+  const btn = event.currentTarget; btn.disabled = true;
+  try {
+    const res = await api(`/api/accounts/${encodeURIComponent(agentModalAccountId)}/agents/select`, {
+      method: 'POST', body: JSON.stringify({agent_id: '', agent_name: ''}),
+    });
+    toast('已恢复为 Amazon Quick 默认 Agent');
+    renderAgentList(res.bound_agent_id, res.bound_agent_name, agentModalAgents);
+    await refresh();
+  } catch (error) { toast(error.message); }
+  finally { btn.disabled = false; }
+});
+$('#agent-edit-cancel')?.addEventListener('click', () => { $('#agent-edit-form').hidden = true; });
+$('#agent-edit-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const agentId = event.currentTarget.dataset.agentId;
+  if (!agentModalAccountId || !agentId) return;
+  const btn = $('#agent-edit-save'); btn.disabled = true;
+  try {
+    const res = await api(`/api/accounts/${encodeURIComponent(agentModalAccountId)}/agents/${encodeURIComponent(agentId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: $('#agent-edit-name').value.trim(),
+        description: $('#agent-edit-desc').value.trim(),
+        instructions: $('#agent-edit-instructions').value.trim(),
+      }),
+    });
+    toast('Agent 提示词已热发布到 AWS Quick');
+    $('#agent-edit-form').hidden = true;
+    const acct = state.accounts.find(a => a.id === agentModalAccountId);
+    renderAgentList(acct?.chat_agent_id || '', acct?.chat_agent_name || '', res.agents || []);
+    await refresh();
+  } catch (error) { toast(error.message); }
+  finally { btn.disabled = false; }
+});

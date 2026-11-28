@@ -35,6 +35,8 @@ _SETTINGS_DEFAULTS = {
     "log_retention": 10000,
     "smart_default_effort": "high",
     "client_restriction": "off",
+    "auto_ensure_coding_agent": True,
+    "custom_agent_prompt": "",
 }
 
 
@@ -105,6 +107,8 @@ class Store:
             'has_refresh_token': 'INTEGER NOT NULL DEFAULT 0',
             'group_name': "TEXT NOT NULL DEFAULT ''",
             'notes': "TEXT NOT NULL DEFAULT ''",
+            'chat_agent_id': "TEXT NOT NULL DEFAULT ''",
+            'chat_agent_name': "TEXT NOT NULL DEFAULT ''",
         }.items():
             if name not in columns:
                 self.db.execute(f'ALTER TABLE accounts ADD COLUMN {name} {definition}')
@@ -175,7 +179,7 @@ class Store:
 
     def patch_account(self, account_id, values):
         allowed = {"name", "enabled", "weight", "max_concurrency", "state", "cooldown_until", "last_error",
-                   "last_used", "successes", "failures", "group_name", "notes"}
+                   "last_used", "successes", "failures", "group_name", "notes", "chat_agent_id", "chat_agent_name"}
         if not values or set(values) - allowed:
             return self.account(account_id)
         with self.lock, self.db:
