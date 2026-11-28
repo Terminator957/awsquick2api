@@ -47,6 +47,61 @@ def _strip_quick_ui_tags(text: str) -> str:
     if not text or '<' not in text:
         return text
     return re.sub(r'\n{3,}', '\n\n', _QUICK_UI_TAG_RE.sub('', text)).strip()
+
+
+def _parse_tool_call_json(raw: str) -> dict | None:
+    """Parse JSON inside a <tool_call> block, tolerating literal newlines/tabs and trailing commas."""
+    text = raw.strip()
+    if text.startswith('```') and text.endswith('```'):
+        text = text.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except ValueError:
+        pass
+    # Repair trailing commas outside strings and allow control chars (strict=False).
+    repaired = []
+    in_str = False
+    esc = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if esc:
+                repaired.append(ch)
+                esc = False
+            elif ch == '\\':
+                repaired.append(ch)
+                esc = True
+            elif ch == '"':
+                repaired.append(ch)
+                in_str = False
+            elif ch == '\n':
+                repaired.append('\\n')
+            elif ch == '\r':
+                repaired.append('\\r')
+            elif ch == '\t':
+                repaired.append('\\t')
+            else:
+                repaired.append(ch)
+        else:
+            if ch == '"':
+                in_str = True
+                repaired.append(ch)
+            elif ch == ',':
+                j = i + 1
+                while j < n and text[j] in ' \t\r\n':
+                    j += 1
+                if j < n and text[j] in '}]':
+                    i += 1
+                    continue
+                repaired.append(ch)
+            else:
+                repaired.append(ch)
+        i += 1
+    obj = json.loads(''.join(repaired), strict=False)
+    return obj if isinstance(obj, dict) else None
 _IDENTITY_PATTERNS = (
     (re.compile(
         r'\bYou are (?:Claude Code|Codex|Cline|Roo Code|Roo|Kilo Code|Kilo|Cursor|OpenCode|'
@@ -229,6 +284,7 @@ class Prepared:
     def result(self, text):
         message, finish = {'role':'assistant','content':text}, 'stop'
         if not self.buffered:
+            message['content'] = _strip_quick_ui_tags(text)
             return message, finish
         commentary = None
         try:
@@ -242,12 +298,12 @@ class Prepared:
                 if self.tools and self.format['type'] == 'text' and '<tool_call>' in stripped.lower():
                     tag_calls = []
                     for match in _TOOL_CALL_TAG_RE.finditer(stripped):
-                        parsed_call = json.loads(match.group(1))
+                        parsed_call = _parse_tool_call_json(match.group(1))
                         if isinstance(parsed_call, dict):
                             tag_calls.append(parsed_call)
                     if tag_calls:
                         value = {'tool_calls': tag_calls}
-                        commentary = _TOOL_CALL_TAG_RE.sub('', stripped).strip() or None
+                        commentary = _strip_quick_ui_tags(_TOOL_CALL_TAG_RE.sub('', stripped)).strip() or None
                     else:
                         value = None
                 else:

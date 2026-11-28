@@ -41,6 +41,34 @@ def test_prepared_parses_tool_call_xml_blocks():
     assert msg['tool_calls'][0]['function']['name'] == 'Read'
     assert json.loads(msg['tool_calls'][0]['function']['arguments']) == {'file_path': 'quickpool/compat.py'}
 
+    # Parallel <tool_call> blocks + literal newlines + trailing commas inside arguments
+    write_req = ChatRequest(
+        model='amazon-smart',
+        messages=[{'role': 'user', 'content': 'write two files'}],
+        tools=[
+            {'type': 'function', 'function': {
+                'name': 'Write', 'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}, 'content': {'type': 'string'}}, 'required': ['path', 'content']},
+            }},
+            {'type': 'function', 'function': {
+                'name': 'Read', 'parameters': {'type': 'object', 'properties': {'file_path': {'type': 'string'}}, 'required': ['file_path']},
+            }},
+        ],
+    )
+    wprep = Prepared(write_req)
+    raw_multi = (
+        '<tool_call>{"name": "Write", "arguments": {"path": "a.py", "content": "def f():\n    return 1\n",},}</tool_call>\n'
+        '<tool_call>{"name": "Read", "arguments": {"file_path": "b.py"}}</tool_call>'
+    )
+    m2, fin2 = wprep.result(raw_multi)
+    assert fin2 == 'tool_calls' and len(m2['tool_calls']) == 2
+    assert json.loads(m2['tool_calls'][0]['function']['arguments']) == {'path': 'a.py', 'content': 'def f():\n    return 1\n'}
+    assert json.loads(m2['tool_calls'][1]['function']['arguments']) == {'file_path': 'b.py'}
+
+    # Plain-text replies strip AWS Quick <decision> and <sources> UI tags
+    plain_reply = '已完成检查。\n\n<decision question="继续？"><option>是</option></decision>\n<sources>[note](mem://123)</sources>'
+    m3, fin3 = wprep.result(plain_reply)
+    assert fin3 == 'stop' and m3['content'] == '已完成检查。'
+
 
 def test_build_user_message_passes_chat_agent_id():
     msg = build_user_message('hi', 't-1', chat_agent_id='agent-123', incognito=True)

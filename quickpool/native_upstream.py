@@ -737,9 +737,19 @@ class Upstream:
                 encoded = encode_message(session.transport, message)
             logging.getLogger(__name__).info('quick_message text_bytes=%d json_bytes=%d inline_wire_bytes=%d wire_bytes=%d offloaded=%s parked=%s',
                 text_bytes, json_bytes, inline_bytes, len(encoded), inline_bytes > 60_000, parked is not None)
+            if len(encoded) > 60_000 and custom_prompt and len(custom_prompt) > 4000:
+                # Auto-compact custom_prompt if attachments + custom_prompt pushed the frame past 60 KB.
+                custom_prompt = custom_prompt[:4000]
+                message = user_message(prompt)
+                encoded = encode_message(session.transport, message)
             if len(encoded) > 60_000:
                 raise UpstreamError(400, 'Quick 附件引用消息仍超过安全发送预算；请减少附件数量', retryable=False)
-            await socket.send(encoded)
+            try:
+                await socket.send(encoded)
+            except (ConnectionClosed, WebSocketException, OSError):
+                if parked is not None:
+                    raise UpstreamError(502, 'Quick 复用长连接已断开，自动切换新连接重试') from None
+                raise
             started_at = time.monotonic()
             timeout_sec = max(60, min(900, int(stream_timeout_sec)))
             deadline = started_at + timeout_sec
