@@ -490,10 +490,59 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             try:
                 text = ''.join([delta async for delta in output()])
                 message, finish = validated_result[0]
-            except (UpstreamError, CompatibilityError) as exc:
-                status = exc.status if isinstance(exc, UpstreamError) else 502
+            except CompatibilityError as first_compat_err:
+                # One silent retry on another healthy account when upstream returns non-JSON (e.g. persona refusal).
+                retry_account = None
+                try:
+                    retry_account = await app.state.pool.acquire(tried, group_name=key_group)
+                except PoolUnavailable:
+                    retry_account = None
+                if retry_account is None:
+                    return JSONResponse({'error': {'message': str(first_compat_err), 'type': 'upstream_error'}}, 502)
+                tried.add(retry_account['id'])
+                retry_state: dict = {}
+                retry_iter = app.state.upstream.stream(
+                    retry_account, messages, agent_mode=value.mode,
+                    thinking_effort=effective_effort, images=prepared.images,
+                    context=prepared.context, reuse_thread_id=None, delta_offset=0,
+                    state_out=retry_state, stream_timeout_sec=stream_timeout_sec,
+                    web_search_enabled=value.web_search_enabled,
+                )
+                r_status, r_error, r_chars, r_retry_after, r_penalize = 200, '', 0, 60, True
+                try:
+                    r_parts = []
+                    async for delta in retry_iter:
+                        r_chars += len(delta)
+                        r_parts.append(delta)
+                    message, finish = prepared.result(''.join(r_parts))
+                except CompatibilityError as exc:
+                    r_penalize, r_status, r_error = False, 502, str(exc)
+                    return JSONResponse({'error': {'message': str(exc), 'type': 'upstream_error'}}, 502)
+                except UpstreamError as exc:
+                    r_status, r_error, r_retry_after, r_penalize = exc.status, str(exc), exc.retry_after, exc.retryable
+                    kind = 'invalid_request_error' if r_status < 500 else 'upstream_error'
+                    return JSONResponse({'error': {'message': str(exc), 'type': kind}}, r_status)
+                except (asyncio.CancelledError, GeneratorExit):
+                    r_status = 499
+                    raise
+                finally:
+                    await retry_iter.aclose()
+                    await app.state.pool.release(retry_account['id'], r_status, r_retry_after, r_error, penalize=r_penalize)
+                    r_tid = retry_state.get('thread_id')
+                    if r_status == 200 and cache is not None and r_tid and prepared.context:
+                        cache.save(retry_account['id'], r_tid, prepared.context, value.mode, effective_effort)
+                    elif r_status != 200 and cache is not None and r_tid:
+                        cache.invalidate(r_tid)
+                    app.state.store.log(uuid.uuid4().hex, retry_account['id'], r_status,
+                                        round((time.monotonic() - started) * 1000), r_chars, r_error,
+                                        model=value.model, session_hit=False,
+                                        api_key_id=api_key_id, input_tokens=input_tokens,
+                                        output_tokens=(r_chars + 3) // 4 if r_chars else 0, user_id=user_id,
+                                        thinking_effort=effective_effort)
+            except UpstreamError as exc:
+                status = exc.status
                 kind = 'invalid_request_error' if status < 500 else 'upstream_error'
-                return JSONResponse({'error':{'message':str(exc),'type':kind}},status)
+                return JSONResponse({'error': {'message': str(exc), 'type': kind}}, status)
             if value.stream:
                 async def buffered_sse():
                     delta = {k:v for k,v in message.items() if k != 'role'}

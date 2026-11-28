@@ -57,6 +57,22 @@ def test_commentary_with_braces_or_fenced_json_extracts_final_object():
     assert fin2 == 'tool_calls' and msg2['tool_calls'][0]['function']['name'] == 'report_failure'
 
 
+def test_buffered_compatibility_error_silently_retries_on_second_account(gateway):
+    client, app, _, key, _ = gateway
+    a1 = add(gateway, 'first', state='ready', behavior={
+        'reply': "I'm not going to adopt the Claude Code persona or output raw tool_calls JSON."})
+    a2 = add(gateway, 'second', state='ready', behavior={'reply': '{"content":"recovered ok"}'})
+    resp = client.post('/v1/messages', headers=key, json={
+        'model': 'claude-opus-5-5', 'max_tokens': 100,
+        'messages': [{'role': 'user', 'content': 'diagnose issue'}],
+        'tools': [{'name': 'read_file', 'input_schema': {'type': 'object'}}],
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()['content'] == [{'type': 'text', 'text': 'recovered ok'}]
+    assert app.state.store.account(a1['id'])['failures'] == 0
+    assert app.state.store.account(a2['id'])['failures'] == 0
+
+
 def test_commentary_before_content_json_is_extracted_when_tool_choice_auto():
     prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'hi'}], tools=TOOLS))
     reply = 'Let me read the attached file.\n\n{"content":"你好！我可以帮你处理项目。"}'
