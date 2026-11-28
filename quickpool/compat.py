@@ -285,7 +285,7 @@ class Prepared:
                 if value is None:
                     if (self.tools and self.choice in ('auto', 'none') and self.format['type'] == 'text'
                             and stripped and not _REFUSAL_RE.search(stripped)
-                            and '"tool_calls"' not in stripped and '<tool_call>' not in stripped.lower()):
+                            and '"tool_calls"' not in stripped and not _TOOL_CALL_TAG_RE.search(stripped)):
                         return {'role': 'assistant', 'content': text}, 'stop'
                     raise ValueError
                 if value.get('tool_calls'):

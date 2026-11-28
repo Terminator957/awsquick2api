@@ -697,20 +697,21 @@ class Upstream:
                                                        app_version=CLIENT_VERSION))
             attachments = await self.upload_images(session, images, thread_id) if images else []
             custom_prompt = None
-            if not reuse and isinstance(context, dict) and (context.get('tools') or any(
+            if isinstance(context, dict) and (context.get('tools') or any(
                 isinstance(m, dict) and m.get('role') in ('system', 'developer') for m in (context.get('messages') or [])
             )):
                 custom_prompt = self._build_custom_prompt(context, has_custom_agent=bool(chat_agent_id))
-                # Keep user message text clean (only non-system conversation turns) when custom_prompt carries system+tools.
-                conv_only = [m for m in (context.get('messages') or []) if isinstance(m, dict) and m.get('role') not in ('system', 'developer')]
-                if len(conv_only) == 1 and set(conv_only[0]) == {'role', 'content'}:
-                    prompt = str(conv_only[0]['content'])
-                elif conv_only:
-                    prompt = '\n\n'.join(
-                        f"[{m.get('role', 'user')}]\n" + (m['content'] if isinstance(m.get('content'), str) and len(m) == 2
-                                                         else json.dumps(m, ensure_ascii=False, separators=(',', ':')))
-                        for m in conv_only
-                    )
+                if not reuse:
+                    # Keep user message text clean (only non-system conversation turns) when custom_prompt carries system+tools.
+                    conv_only = [m for m in (context.get('messages') or []) if isinstance(m, dict) and m.get('role') not in ('system', 'developer')]
+                    if len(conv_only) == 1 and set(conv_only[0]) == {'role', 'content'}:
+                        prompt = str(conv_only[0]['content'])
+                    elif conv_only:
+                        prompt = '\n\n'.join(
+                            f"[{m.get('role', 'user')}]\n" + (m['content'] if isinstance(m.get('content'), str) and len(m) == 2
+                                                             else json.dumps(m, ensure_ascii=False, separators=(',', ':')))
+                            for m in conv_only
+                        )
             def user_message(text):
                 return build_user_message(text, thread_id, agent_mode=agent_mode, thinking_effort=thinking_effort,
                     attachments=attachments, outpost_id=session.outpost_id, app_version=CLIENT_VERSION,
