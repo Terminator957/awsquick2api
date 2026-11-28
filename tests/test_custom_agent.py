@@ -78,8 +78,9 @@ def test_render_context_txt_is_plain_text_without_api_wrapper():
         'tools': [{'type': 'function', 'function': {'name': 'Read', 'description': 'Read file', 'parameters': {'type': 'object'}}}],
     }
     txt = Upstream._render_context_txt(payload).decode('utf-8')
-    assert '=== Workspace Instructions ===' in txt
-    assert '=== Conversation History ===' in txt
+    assert '[Turn 0 · user]' in txt
+    assert 'Check status' in txt
+    assert 'Work cleanly.' not in txt
     assert 'api-context.json' not in txt
     assert 'API request' not in txt
 

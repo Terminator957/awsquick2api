@@ -264,9 +264,9 @@ async def test_offload_includes_inline_recent_turns_and_multiline_attachment(mon
     assert 'WITHOUT calling file_read or run_python' in inline_text
     assert uploaded and b'\n' in uploaded[0]['data']
     uploaded_txt = uploaded[0]['data'].decode('utf-8')
-    assert 'SYSTEM_RULE_MARKER' in uploaded_txt
     assert 'LATEST_USER_QUESTION_MARKER' in uploaded_txt
-    assert 'EditFile' in uploaded_txt
+    assert 'SYSTEM_RULE_MARKER' not in uploaded_txt
+    assert 'EditFile' not in uploaded_txt
 
 
 @pytest.mark.parametrize('event_type,expected_status,expected_text', [

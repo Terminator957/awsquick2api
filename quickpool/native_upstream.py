@@ -497,46 +497,28 @@ class Upstream:
 
     @staticmethod
     def _render_context_txt(payload_obj, *, continuation=False) -> bytes:
-        """Render conversation context as clean plain text (avoiding JSON API-wrapper framing)."""
+        """Render ONLY past conversation turns as plain reference text (never embed system/tool instructions in attachments)."""
         if not isinstance(payload_obj, dict):
             return str(payload_obj).encode('utf-8')
-        parts = []
         msgs = payload_obj.get('messages') or []
-        system_roles = ('system',) if continuation else ('system', 'developer')
-        sys_msgs = [] if continuation else [m for m in msgs if isinstance(m, dict) and m.get('role') in system_roles]
-        conv_msgs = [m for m in msgs if isinstance(m, dict) and m.get('role') not in system_roles]
-        if sys_msgs:
-            parts.append('=== Workspace Instructions ===\n' + '\n\n'.join(
-                str(m.get('content') or '') for m in sys_msgs))
-        tools = [] if continuation else (payload_obj.get('tools') or [])
-        if tools:
-            compact = []
-            for t in tools:
-                fn = t.get('function', t) if isinstance(t, dict) else {}
-                compact.append({'name': fn.get('name', ''),
-                                'description': (fn.get('description') or '')[:300],
-                                'parameters': fn.get('parameters') or {'type': 'object'}})
-            parts.append('=== Local Client Functions ===\n' + json.dumps(compact, ensure_ascii=False, separators=(',', ':')))
-        if conv_msgs:
-            lines = ['=== Conversation History ===']
-            for idx, m in enumerate(conv_msgs):
-                role = m.get('role', 'user')
-                content = m.get('content')
-                meta = []
-                if m.get('tool_call_id'):
-                    meta.append(f"tool_call_id={m['tool_call_id']}")
-                if m.get('name'):
-                    meta.append(f"name={m['name']}")
-                header = f'[Turn {idx} · {role}' + (f' ({", ".join(meta)})' if meta else '') + ']'
-                body = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-                if m.get('tool_calls'):
-                    tc = json.dumps(m['tool_calls'], ensure_ascii=False, separators=(',', ':'))
-                    body = (body + '\n' if body else '') + f'tool_calls={tc}'
-                lines.append(f'{header}\n{body}')
-            parts.append('\n\n'.join(lines))
-        data = '\n\n'.join(parts).encode('utf-8')
+        conv_msgs = [m for m in msgs if isinstance(m, dict) and m.get('role') not in ('system', 'developer')]
+        lines = []
+        for idx, m in enumerate(conv_msgs):
+            role = m.get('role', 'user')
+            content = m.get('content')
+            meta = []
+            if m.get('tool_call_id'):
+                meta.append(f"tool_call_id={m['tool_call_id']}")
+            if m.get('name'):
+                meta.append(f"name={m['name']}")
+            header = f'[Turn {idx} · {role}' + (f' ({", ".join(meta)})' if meta else '') + ']'
+            body = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+            if m.get('tool_calls'):
+                tc = json.dumps(m['tool_calls'], ensure_ascii=False, separators=(',', ':'))
+                body = (body + '\n' if body else '') + f'tool_calls={tc}'
+            lines.append(f'{header}\n{body}')
+        data = '\n\n'.join(lines).encode('utf-8')
         if len(data) > 5 * 1024 * 1024:
-            # Keep instructions + most recent tail within 5 MiB attachment budget.
             data = data[-5 * 1024 * 1024:]
         return data
 
