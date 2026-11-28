@@ -37,9 +37,16 @@ def _extract_loose_content_json(text: str) -> str | None:
     return _JSON_ESC_RE.sub(_unescape, raw)
 _REFUSAL_RE = re.compile(
     r"(?:not going to adopt|won't adopt|cannot adopt|refuse to adopt|output raw [`'\"]?tool_calls[`'\"]?|"
-    r"prompt[- ]injection|提示注入|不是我的身份|不是我实际可用的工具|AWS Quick\s*桌面应用|Coding agents|<decision\b)",
+    r"prompt[- ]injection|提示注入|不是我的身份|不是我实际可用的工具|AWS Quick\s*桌面应用|Coding agents)",
     re.IGNORECASE,
 )
+_QUICK_UI_TAG_RE = re.compile(r'<(?:decisions?|sources)\b[^>]*>[\s\S]*?</(?:decisions?|sources)>', re.IGNORECASE)
+
+
+def _strip_quick_ui_tags(text: str) -> str:
+    if not text or '<' not in text:
+        return text
+    return re.sub(r'\n{3,}', '\n\n', _QUICK_UI_TAG_RE.sub('', text)).strip()
 _IDENTITY_PATTERNS = (
     (re.compile(
         r'\bYou are (?:Claude Code|Codex|Cline|Roo Code|Roo|Kilo Code|Kilo|Cursor|OpenCode|'
@@ -286,7 +293,7 @@ class Prepared:
                     if (self.tools and self.choice in ('auto', 'none') and self.format['type'] == 'text'
                             and stripped and not _REFUSAL_RE.search(stripped)
                             and '"tool_calls"' not in stripped and not _TOOL_CALL_TAG_RE.search(stripped)):
-                        return {'role': 'assistant', 'content': text}, 'stop'
+                        return {'role': 'assistant', 'content': _strip_quick_ui_tags(text)}, 'stop'
                     raise ValueError
                 if value.get('tool_calls'):
                     commentary = candidate_text[:start].strip() or None
