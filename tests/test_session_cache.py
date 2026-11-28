@@ -265,7 +265,7 @@ async def test_reused_stream_sends_only_delta_and_uploads_only_with_new_image(na
     conversation_connect, message = native.connections[0].sent[2:]
     assert conversation_connect['payload']['session_id'] == message['payload']['thread_id'] == 'reused'
     prompt = message['payload']['text']
-    assert 'adapter_instructions' in prompt and '{"tool_calls":[...]}' in prompt and '{"content":' in prompt
+    assert '<tool_call>' in prompt and 'follow-up turn' in prompt
     for item in conversation['messages'][3:]:
         if item['role'] != 'system':
             assert f"[{item['role']}]\n" + json.dumps(item, ensure_ascii=False, separators=(',', ':')) in prompt
@@ -318,7 +318,8 @@ async def test_reuse_error_before_first_output_invalidates_and_resends_full_prom
     thread = fresh.sent[-1]['payload']['thread_id']
     assert thread != 'reused'
     assert fresh.sent[2]['payload']['session_id'] == fresh.sent[3]['payload']['session_id'] == thread
-    assert fresh.sent[-1]['payload']['text'] == full_prompt
+    assert 'OLD_USER_QUESTION' in fresh.sent[-1]['payload']['text']
+    assert 'OLD_SYSTEM_RULE' in (fresh.sent[-1]['payload']['custom_prompt'] or '')
 
 
 @pytest.mark.parametrize('outcome,attempts', [('reject', 2), ('partial', 1)])
@@ -348,7 +349,7 @@ async def test_invalid_delta_offset_uses_existing_fresh_path(native, conversatio
     [socket] = native.connections
     assert socket.sent[2]['type'] == 'session_create'
     assert socket.sent[-1]['payload']['thread_id'] != 'reused'
-    assert socket.sent[-1]['payload']['text'] == 'FULL'
+    assert 'NEW_USER_QUESTION' in socket.sent[-1]['payload']['text']
 
 
 def test_sqlite_persistence_survives_restart(tmp_path):

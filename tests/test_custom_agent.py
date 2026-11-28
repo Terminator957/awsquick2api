@@ -131,18 +131,18 @@ def test_settings_and_account_agent_select_api(gateway):
     assert res.status_code == 201
     aid = res.json()['id']
 
-    # Default settings include auto_ensure_coding_agent=False (opt-in)
+    # Default settings include auto_ensure_coding_agent=True
     s = client.get('/api/settings', headers=admin).json()
-    assert s['auto_ensure_coding_agent'] is False
+    assert s['auto_ensure_coding_agent'] is True
     assert s['custom_agent_prompt'] == ''
 
     # Update custom agent settings
     patched = client.patch('/api/settings', headers=admin, json={
-        'auto_ensure_coding_agent': True,
+        'auto_ensure_coding_agent': False,
         'custom_agent_prompt': 'Custom coding prompt',
     })
     assert patched.status_code == 200
-    assert patched.json()['auto_ensure_coding_agent'] is True
+    assert patched.json()['auto_ensure_coding_agent'] is False
     assert patched.json()['custom_agent_prompt'] == 'Custom coding prompt'
 
     # Select & clear custom agent on account

@@ -36,7 +36,8 @@ def _extract_loose_content_json(text: str) -> str | None:
 
     return _JSON_ESC_RE.sub(_unescape, raw)
 _REFUSAL_RE = re.compile(
-    r"(?:not going to adopt|won't adopt|cannot adopt|refuse to adopt|output raw [`'\"]?tool_calls[`'\"]?)",
+    r"(?:not going to adopt|won't adopt|cannot adopt|refuse to adopt|output raw [`'\"]?tool_calls[`'\"]?|"
+    r"prompt[- ]injection|提示注入|不是我的身份|不是我实际可用的工具|AWS Quick\s*桌面应用|Coding agents|<decision\b)",
     re.IGNORECASE,
 )
 _IDENTITY_PATTERNS = (
@@ -282,6 +283,10 @@ class Prepared:
                         if loose is not None:
                             value = {'content': loose}
                 if value is None:
+                    if (self.tools and self.choice in ('auto', 'none') and self.format['type'] == 'text'
+                            and stripped and not _REFUSAL_RE.search(stripped)
+                            and '"tool_calls"' not in stripped and '<tool_call>' not in stripped.lower()):
+                        return {'role': 'assistant', 'content': text}, 'stop'
                     raise ValueError
                 if value.get('tool_calls'):
                     commentary = candidate_text[:start].strip() or None

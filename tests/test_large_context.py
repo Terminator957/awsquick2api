@@ -199,7 +199,7 @@ def test_request_body_limit_remains_bounded(gateway):
 
 def test_invalid_tool_json_is_not_an_account_failure(gateway):
     client, app, _, key, _ = gateway
-    account=add(gateway,state='ready',behavior={'reply':'Not a JSON response'})
+    account=add(gateway,state='ready',behavior={'reply':'{"tool_calls": invalid'})
     response=client.post('/v1/messages',headers=key,json={'model':'amazon-smart','max_tokens':100,
         'messages':[{'role':'user','content':'hi'}], 'tools':[{'name':'check','input_schema':{'type':'object'}}]})
     assert response.status_code==502
@@ -258,9 +258,10 @@ async def test_offload_includes_inline_recent_turns_and_multiline_attachment(mon
     raw, message = next((raw, e) for raw, e in sent if e['type'] == 'user_message')
     assert len(raw) <= 60000
     inline_text = message['payload']['text']
+    custom_prompt = message['payload']['custom_prompt'] or ''
     assert 'LATEST_USER_QUESTION_MARKER' in inline_text
-    assert 'EditFile' in inline_text
-    assert 'SYSTEM_RULE_MARKER' in inline_text
+    assert 'EditFile' in custom_prompt
+    assert 'SYSTEM_RULE_MARKER' in custom_prompt
     assert 'WITHOUT calling file_read or run_python' in inline_text
     assert uploaded and b'\n' in uploaded[0]['data']
     uploaded_txt = uploaded[0]['data'].decode('utf-8')
