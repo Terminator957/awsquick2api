@@ -16,6 +16,25 @@ import uuid
 _BILLING_HEADER_RE = re.compile(r'^x-anthropic-billing-header[^\n]*$', re.IGNORECASE | re.MULTILINE)
 _SYSTEM_REMINDER_RE = re.compile(r'<system-reminder>([\s\S]*?)</system-reminder>', re.IGNORECASE)
 _TOOL_CALL_TAG_RE = re.compile(r'<tool_call>\s*([\s\S]*?)\s*</tool_call>', re.IGNORECASE)
+_LOOSE_CONTENT_RE = re.compile(r'^\s*\{\s*"content"\s*:\s*"([\s\S]*)"\s*\}\s*$')
+_JSON_ESC_RE = re.compile(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})')
+_JSON_ESC_MAP = {'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t'}
+
+
+def _extract_loose_content_json(text: str) -> str | None:
+    """Recover {"content": "..."} when the model forgot to escape ASCII quotes inside the string."""
+    match = _LOOSE_CONTENT_RE.match(text)
+    if not match:
+        return None
+    raw = match.group(1)
+
+    def _unescape(m):
+        tok = m.group(1)
+        if tok.startswith('u'):
+            return chr(int(tok[1:], 16))
+        return _JSON_ESC_MAP.get(tok, m.group(0))
+
+    return _JSON_ESC_RE.sub(_unescape, raw)
 _REFUSAL_RE = re.compile(
     r"(?:not going to adopt|won't adopt|cannot adopt|refuse to adopt|output raw [`'\"]?tool_calls[`'\"]?)",
     re.IGNORECASE,
@@ -250,6 +269,16 @@ class Prepared:
                         value, start = parsed, pos
                         break
                     search_from = pos + 1
+                if value is None:
+                    if self.tools and self.choice in ('auto', 'none') and self.format['type'] == 'text':
+                        loose = _extract_loose_content_json(stripped)
+                        if loose is None:
+                            # Also check trailing {"content":"..."} after commentary or fenced block.
+                            tail_pos = candidate_text.rfind('{"content"')
+                            if tail_pos >= 0:
+                                loose = _extract_loose_content_json(candidate_text[tail_pos:])
+                        if loose is not None:
+                            value = {'content': loose}
                 if value is None:
                     raise ValueError
                 if value.get('tool_calls'):

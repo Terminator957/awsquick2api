@@ -79,6 +79,11 @@ def test_commentary_before_content_json_is_extracted_when_tool_choice_auto():
     message, finish = prepared.result(reply)
     assert finish == 'stop'
     assert message == {'role': 'assistant', 'content': '你好！我可以帮你处理项目。'}
+    # Unescaped ASCII quotes inside {"content": "..."} (fenced or bare) are recovered cleanly.
+    unescaped = '```json\n{"content":"不是单纯"跑着等结果"。\n\n状态：处于"尚未合并的路径""}\n```'
+    msg_u, fin_u = prepared.result(unescaped)
+    assert fin_u == 'stop'
+    assert msg_u == {'role': 'assistant', 'content': '不是单纯"跑着等结果"。\n\n状态：处于"尚未合并的路径"'}
     # When tool_choice='required', content JSON without tool_calls is still rejected.
     req_prepared = Prepared(ChatRequest(messages=[{'role': 'user', 'content': 'hi'}],
                                         tools=TOOLS, tool_choice='required'))
