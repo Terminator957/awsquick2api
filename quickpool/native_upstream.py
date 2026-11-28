@@ -358,7 +358,7 @@ class Upstream:
     async def stream(self, account: dict, messages: list[dict], *, agent_mode='smart', thinking_effort='off',
                      images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
                      state_out: dict | None = None, stream_timeout_sec: int = 300,
-                     web_search_enabled: bool = False):
+                     web_search_enabled: bool = False, incognito: bool = False):
         refreshed = False
         chat_agent_id = (account.get('chat_agent_id') or '').strip() or None
         if not chat_agent_id and self.connect is websocket_connect and self.http_transport is None:
@@ -384,6 +384,7 @@ class Upstream:
                             reuse_thread_id=reuse_thread_id, delta_offset=delta_offset,
                             state_out=state_out, stream_timeout_sec=stream_timeout_sec,
                             web_search_enabled=web_search_enabled, chat_agent_id=chat_agent_id,
+                            incognito=incognito,
                         ):
                             emitted = True
                             yield text
@@ -582,7 +583,8 @@ class Upstream:
     async def _stream(self, session, account_id, messages, *, agent_mode='smart', thinking_effort='off',
                       images=None, context=None, reuse_thread_id: str | None = None, delta_offset: int = 0,
                       state_out: dict | None = None, stream_timeout_sec: int = 300,
-                      web_search_enabled: bool = False, chat_agent_id: str | None = None):
+                      web_search_enabled: bool = False, chat_agent_id: str | None = None,
+                      incognito: bool = False):
         reuse = _can_reuse(reuse_thread_id, context, delta_offset)
         thread_id = reuse_thread_id if reuse else str(uuid.uuid4())
         if state_out is not None:
@@ -620,7 +622,7 @@ class Upstream:
             def user_message(text):
                 return build_user_message(text, thread_id, agent_mode=agent_mode, thinking_effort=thinking_effort,
                     attachments=attachments, outpost_id=session.outpost_id, app_version=CLIENT_VERSION,
-                    chat_agent_id=chat_agent_id, web_search_enabled=web_search_enabled)
+                    chat_agent_id=chat_agent_id, web_search_enabled=web_search_enabled, incognito=incognito)
             message = user_message(prompt)
             encoded = encode_message(session.transport, message)
             inline_bytes = len(encoded)

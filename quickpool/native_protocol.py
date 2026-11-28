@@ -280,7 +280,7 @@ def build_user_message(text: str, thread_id: str, *, message_id: str | None = No
                        user_locale: str = "en-US", surface: str = DESKTOP_SURFACE,
                        outpost_id: str = "", app_version: str | None = None,
                        custom_prompt: str | None = None, chat_agent_id: str | None = None,
-                       web_search_enabled: bool = False,
+                       web_search_enabled: bool = False, incognito: bool = False,
                        auto_routing: bool = False, attachments: list[dict] | None = None) -> dict[str, Any]:
     return {"type": "user_message", "payload": {
         "traceId": trace_id or str(uuid.uuid4()), "text": text, "send_origin": "programmatic",
@@ -290,6 +290,7 @@ def build_user_message(text: str, thread_id: str, *, message_id: str | None = No
         "user_timezone": user_timezone, "user_locale": user_locale,
         "custom_prompt": custom_prompt, "chat_agent_id": chat_agent_id or None, "auto_routing": auto_routing,
         "web_search_enabled": web_search_enabled, "direct_chat": False, "voice_mode": False,
+        **({'incognito': True} if incognito else {}),
         **({'attachments': attachments} if attachments else {})}}
 
 

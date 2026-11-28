@@ -26,13 +26,16 @@ def hash_message(msg) -> str:
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
-def hash_config(agent_mode, thinking_effort, tools, response_format, tool_choice, parallel_tool_calls) -> str:
-    return hash_message((agent_mode, thinking_effort, tools, response_format, tool_choice, parallel_tool_calls))
+def hash_config(agent_mode, thinking_effort, tools, response_format, tool_choice, parallel_tool_calls, scope='') -> str:
+    payload = (agent_mode, thinking_effort, tools, response_format, tool_choice, parallel_tool_calls)
+    if scope:
+        payload = (*payload, scope)
+    return hash_message(payload)
 
 
-def _context_config(context, agent_mode, thinking_effort):
+def _context_config(context, agent_mode, thinking_effort, scope=''):
     return hash_config(agent_mode, thinking_effort, context.get('tools'), context.get('response_format'),
-                       context.get('tool_choice'), context.get('parallel_tool_calls'))
+                       context.get('tool_choice'), context.get('parallel_tool_calls'), scope=scope)
 
 
 class SessionCache:
@@ -56,18 +59,19 @@ class SessionCache:
                     turns=row['turns'], last_persisted=now,
                 )
 
-    def match(self, context, agent_mode, thinking_effort, available_account_ids=None) -> tuple[SessionEntry, int] | None:
+    def match(self, context, agent_mode, thinking_effort, available_account_ids=None, *, scope='') -> tuple[SessionEntry, int] | None:
         now = time.monotonic()
         messages = context.get('messages') or []
         current_hashes = tuple(map(hash_message, messages))
-        config_hash = _context_config(context, agent_mode, thinking_effort)
+        config_hash = _context_config(context, agent_mode, thinking_effort, scope=scope)
         eligible = (
             entry for entry in self._entries.values()
             if now - entry.last_used <= self.ttl
             and entry.config_hash == config_hash
             and (available_account_ids is None or entry.account_id in available_account_ids)
-            and len(entry.msg_hashes) < len(current_hashes)
+            and 1 <= len(entry.msg_hashes) < len(current_hashes)
             and current_hashes[:len(entry.msg_hashes)] == entry.msg_hashes
+            and any(messages[i].get('role') not in ('system', 'developer') for i in range(len(entry.msg_hashes)))
         )
         entry = max(eligible, key=lambda entry: (len(entry.msg_hashes), entry.last_used), default=None)
         if entry is None:
@@ -98,12 +102,12 @@ class SessionCache:
         if value > 0:
             self.saved_tokens += value
 
-    def save(self, account_id, thread_id, context, agent_mode, thinking_effort, *, assistant_reply=None):
+    def save(self, account_id, thread_id, context, agent_mode, thinking_effort, *, assistant_reply=None, scope=''):
         now = time.monotonic()
         self._expire(now)
         previous = self._entries.get(thread_id)
         entry = SessionEntry(
-            account_id, thread_id, _context_config(context, agent_mode, thinking_effort),
+            account_id, thread_id, _context_config(context, agent_mode, thinking_effort, scope=scope),
             tuple(map(hash_message, context.get('messages') or [])), now,
             turns=previous.turns + 1 if previous else 1, last_persisted=now,
         )

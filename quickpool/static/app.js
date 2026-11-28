@@ -385,7 +385,7 @@ async function loadSessions() {
   $('#sessions-empty').hidden = !!sessions.length;
   $('#clear-sessions').disabled = !sessions.length;
 }
-function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off', auto_ensure_coding_agent = false, custom_agent_prompt = ''}) {
+function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, max_images = 50, max_image_mb = 5, max_messages = 2000, max_tools = 256, max_body_mb = 20, stream_timeout_sec = 300, log_retention = 10000, smart_default_effort = 'high', client_restriction = 'off', incognito = true, auto_ensure_coding_agent = false, custom_agent_prompt = ''}) {
   $('#scheduling-strategy').value = scheduling_strategy;
   $('#session-cache-ttl').value = session_cache_ttl;
   $('#max-attempts').value = max_attempts;
@@ -398,6 +398,7 @@ function renderSettings({scheduling_strategy, session_cache_ttl, max_attempts, m
   $('#log-retention').value = log_retention;
   $('#smart-default-effort').value = smart_default_effort;
   $('#client-restriction').value = client_restriction;
+  $('#incognito-mode').value = String(Boolean(incognito));
   $('#auto-ensure-coding-agent').value = String(Boolean(auto_ensure_coding_agent));
   $('#custom-agent-prompt').value = custom_agent_prompt || '';
   $('#settings-form button').disabled = false;
@@ -894,6 +895,7 @@ $('#settings-form').addEventListener('submit', async event => {
     stream_timeout_sec: Number($('#stream-timeout-sec').value), log_retention: Number($('#log-retention').value),
     smart_default_effort: $('#smart-default-effort').value,
     client_restriction: $('#client-restriction').value,
+    incognito: $('#incognito-mode').value === 'true',
     auto_ensure_coding_agent: $('#auto-ensure-coding-agent').value === 'true',
     custom_agent_prompt: $('#custom-agent-prompt').value.trim()};
   button.disabled = true;

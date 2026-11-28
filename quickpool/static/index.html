@@ -97,6 +97,7 @@
               <label>日志保留条数<input type="number" id="log-retention" min="1000" max="100000" required></label>
               <label>smart 默认思考深度<select class="filter-select" id="smart-default-effort"><option value="high">high（Quick 最高档）</option><option value="medium">medium</option><option value="low">low</option><option value="off">off（关闭）</option></select></label>
               <label>客户端访问限制<select class="filter-select" id="client-restriction"><option value="off">不限制</option><option value="claude_only">仅限 Claude Code / 桌面端</option></select></label>
+              <label>无痕模式（防云端记忆串台）<select class="filter-select" id="incognito-mode"><option value="true">开启（推荐 · 不落云端历史与 mem:// 记忆）</option><option value="false">关闭（允许云端跨连接会话复用）</option></select></label>
               <label>自定义 Agent 自动绑定<select class="filter-select" id="auto-ensure-coding-agent"><option value="true">开启（首次自动创建并绑定 Coding Assistant）</option><option value="false">关闭（使用 Amazon Quick 默认 Agent）</option></select></label>
               <label class="settings-wide">自定义 Agent 默认提示词模板（留空使用内置极简编程助手模板）<textarea id="custom-agent-prompt" rows="3" maxlength="8000" placeholder="留空则使用内置 Coding Assistant 指令模板…"></textarea></label>
             </div>

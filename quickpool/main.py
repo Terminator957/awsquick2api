@@ -382,10 +382,12 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
         iterator = None
         first = ""
         cache = getattr(app.state.upstream, 'session_cache', None)
+        incognito = bool(settings.get('incognito', True))
         matched_entry, delta_offset = None, 0
-        if cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
+        if not incognito and cache is not None and prepared.context and len(prepared.context.get('messages') or []) > 1:
             eligible_ids = app.state.pool.eligible_ids(tried, group_name=key_group)
-            match = cache.match(prepared.context, value.mode, effective_effort, available_account_ids=eligible_ids)
+            match = cache.match(prepared.context, value.mode, effective_effort,
+                                available_account_ids=eligible_ids, scope=api_key_id)
             if match is not None:
                 matched_entry, delta_offset = match
                 delta_messages = (prepared.context.get('messages') or [])[delta_offset:]
@@ -411,6 +413,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                 state_out=stream_state,
                 stream_timeout_sec=stream_timeout_sec,
                 web_search_enabled=value.web_search_enabled,
+                incognito=incognito,
             )
             try:
                 first = await anext(iterator)
@@ -471,8 +474,9 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
             finally:
                 await iterator.aclose()
                 await app.state.pool.release(account["id"], status, retry_after, error, penalize=penalize)
-                if status == 200 and cache is not None and session_thread_id and prepared.context:
-                    cache.save(account["id"], session_thread_id, prepared.context, value.mode, effective_effort)
+                if status == 200 and not incognito and cache is not None and session_thread_id and prepared.context:
+                    cache.save(account["id"], session_thread_id, prepared.context, value.mode,
+                               effective_effort, scope=api_key_id)
                 elif status != 200 and cache is not None and session_thread_id:
                     cache.invalidate(session_thread_id)
                 app.state.store.log(request_id, account["id"], status,
@@ -507,6 +511,7 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                     context=prepared.context, reuse_thread_id=None, delta_offset=0,
                     state_out=retry_state, stream_timeout_sec=stream_timeout_sec,
                     web_search_enabled=value.web_search_enabled,
+                    incognito=incognito,
                 )
                 r_status, r_error, r_chars, r_retry_after, r_penalize = 200, '', 0, 60, True
                 try:
@@ -529,8 +534,9 @@ def create_app(data_dir: Path | None = None, transport=None, ws_connect=None):
                     await retry_iter.aclose()
                     await app.state.pool.release(retry_account['id'], r_status, r_retry_after, r_error, penalize=r_penalize)
                     r_tid = retry_state.get('thread_id')
-                    if r_status == 200 and cache is not None and r_tid and prepared.context:
-                        cache.save(retry_account['id'], r_tid, prepared.context, value.mode, effective_effort)
+                    if r_status == 200 and not incognito and cache is not None and r_tid and prepared.context:
+                        cache.save(retry_account['id'], r_tid, prepared.context, value.mode,
+                                   effective_effort, scope=api_key_id)
                     elif r_status != 200 and cache is not None and r_tid:
                         cache.invalidate(r_tid)
                     app.state.store.log(uuid.uuid4().hex, retry_account['id'], r_status,

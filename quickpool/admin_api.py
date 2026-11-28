@@ -51,6 +51,7 @@ class SettingsPatch(BaseModel):
     client_restriction: Literal['off', 'claude_only'] | None = None
     auto_ensure_coding_agent: bool | None = None
     custom_agent_prompt: str | None = Field(default=None, max_length=8000)
+    incognito: bool | None = None
 
 
 class AgentSelectBody(BaseModel):

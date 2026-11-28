@@ -43,10 +43,28 @@ def test_prepared_parses_tool_call_xml_blocks():
 
 
 def test_build_user_message_passes_chat_agent_id():
-    msg = build_user_message('hi', 't-1', chat_agent_id='agent-123')
+    msg = build_user_message('hi', 't-1', chat_agent_id='agent-123', incognito=True)
     assert msg['payload']['chat_agent_id'] == 'agent-123'
+    assert msg['payload']['incognito'] is True
     msg_default = build_user_message('hi', 't-1')
     assert msg_default['payload']['chat_agent_id'] is None
+    assert 'incognito' not in msg_default['payload']
+
+
+def test_session_cache_isolates_scope_and_system_only_prefix():
+    from quickpool.session_cache import SessionCache
+
+    cache = SessionCache()
+    sys_only = {'messages': [{'role': 'system', 'content': 'same system'}]}
+    cache.save('acc-1', 't-sys', sys_only, 'smart', 'high', scope='k1')
+    assert cache.match({'messages': [{'role': 'system', 'content': 'same system'}, {'role': 'user', 'content': 'hi'}]},
+                       'smart', 'high', scope='k1') is None
+
+    conv = {'messages': [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u1'}]}
+    cache.save('acc-1', 't-k1', conv, 'smart', 'high', scope='k1')
+    follow = {'messages': [*conv['messages'], {'role': 'assistant', 'content': 'a1'}, {'role': 'user', 'content': 'u2'}]}
+    assert cache.match(follow, 'smart', 'high', scope='k2') is None
+    assert cache.match(follow, 'smart', 'high', scope='k1')[0].thread_id == 't-k1'
 
 
 def test_normalize_agent_id():

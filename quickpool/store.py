@@ -37,6 +37,7 @@ _SETTINGS_DEFAULTS = {
     "client_restriction": "off",
     "auto_ensure_coding_agent": False,
     "custom_agent_prompt": "",
+    "incognito": True,
 }
 
 

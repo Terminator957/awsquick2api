@@ -106,6 +106,7 @@ def test_account_detail_batch_ops_and_log_filters(gateway):
 
 def test_end_to_end_session_reuse_affinity_and_cache_stats(gateway):
     client, app, admin, key, backend = gateway
+    client.patch('/api/settings', headers=admin, json={'incognito': False})
     a1 = add(gateway, 'acc-1', state='ready')
     a2 = add(gateway, 'acc-2', state='ready')
 
