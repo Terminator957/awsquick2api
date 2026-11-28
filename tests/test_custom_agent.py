@@ -42,6 +42,21 @@ def test_prepared_parses_tool_call_xml_blocks():
     assert json.loads(msg['tool_calls'][0]['function']['arguments']) == {'file_path': 'quickpool/compat.py'}
 
 
+def test_prepared_allows_plain_markdown_text_when_tool_choice_auto():
+    req = ChatRequest(
+        model='amazon-smart',
+        messages=[{'role': 'user', 'content': 'explain this'}],
+        tools=[{'type': 'function', 'function': {
+            'name': 'Read', 'parameters': {'type': 'object', 'properties': {'file_path': {'type': 'string'}}},
+        }}],
+    )
+    prep = Prepared(req)
+    md = '## 排查结论\n\n原因如下：\n```python\nprint("ok")\n```'
+    msg, finish = prep.result(md)
+    assert finish == 'stop'
+    assert msg == {'role': 'assistant', 'content': md}
+
+
 def test_build_user_message_passes_chat_agent_id():
     msg = build_user_message('hi', 't-1', chat_agent_id='agent-123')
     assert msg['payload']['chat_agent_id'] == 'agent-123'

@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import re
 import uuid
 
@@ -15,6 +16,10 @@ import uuid
 _BILLING_HEADER_RE = re.compile(r'^x-anthropic-billing-header[^\n]*$', re.IGNORECASE | re.MULTILINE)
 _SYSTEM_REMINDER_RE = re.compile(r'<system-reminder>([\s\S]*?)</system-reminder>', re.IGNORECASE)
 _TOOL_CALL_TAG_RE = re.compile(r'<tool_call>\s*([\s\S]*?)\s*</tool_call>', re.IGNORECASE)
+_REFUSAL_RE = re.compile(
+    r"(?:not going to adopt|won't adopt|cannot adopt|refuse to adopt|output raw [`'\"]?tool_calls[`'\"]?)",
+    re.IGNORECASE,
+)
 _IDENTITY_PATTERNS = (
     (re.compile(
         r'\bYou are (?:Claude Code|Codex|Cline|Roo Code|Roo|Kilo Code|Kilo|Cursor|OpenCode|'
@@ -246,12 +251,22 @@ class Prepared:
                         break
                     search_from = pos + 1
                 if value is None:
+                    # When tools are optional (auto/none) and response_format is text, a normal Markdown answer
+                    # without JSON wrapping is valid text unless it is a refusal or malformed tool_calls attempt.
+                    if (self.tools and self.choice in ('auto', 'none') and self.format['type'] == 'text'
+                            and stripped and not _REFUSAL_RE.search(stripped)
+                            and '"tool_calls"' not in stripped and '<tool_call>' not in stripped.lower()):
+                        return {'role': 'assistant', 'content': text}, 'stop'
                     raise ValueError
                 if value.get('tool_calls'):
                     commentary = candidate_text[:start].strip() or None
             if not isinstance(value, dict):
                 raise TypeError
         except (ValueError, TypeError, IndexError):
+            logging.getLogger(__name__).warning(
+                'compat_json_parse_failed len=%d choice=%s format=%s head=%r',
+                len(text), self.choice, self.format.get('type'), text.strip()[:180],
+            )
             raise CompatibilityError('Quick 未返回有效 JSON；工具/结构化适配失败') from None
         if self.tools:
             calls = value.get('tool_calls')
